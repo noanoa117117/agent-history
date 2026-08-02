@@ -20,6 +20,7 @@
 
 - Hook は Claude Code のクリティカルパス上で動きます。`bin/agent-history-claude-hook` → `capture/hook_fast.py` → `capture/spool.py` の経路に **重い import を足さないでください**。実測で `json` は +7.6ms、`agent_history.sanitizer`（`re` を引く）は +24ms かかり、25ms の予算を壊します。`tests/test_spool.py` が実際にロードされたモジュールを検査して防いでいます。
 - Hook は **SQLite を開かず、fsync せず、常に終了コード 0 を返します**。この3点は受け入れ条件そのものなのでテストで固定してあります。
+- 性能基準は **p95 25 ms 未満**です。当初目標の 10 ms は達成しておらず、達成不能です（このマシンではプロセス起動だけで約 11.8 ms かかり、`cat`+`mv` のみの sh スクリプトでも 11.4 ms）。「10 ms 達成」と記述しないでください。実測は p50 16.5 ms / p95 17.2 ms です。
 - 重い処理（JSON 解析、サニタイズ、切り詰め、DB 書き込み）は全て `worker/` 側で行います。hook 側へ移さないでください。
 - このリポジトリの検証環境は **回転ディスク**で、fsync 1回が約83msかかります。SSD で計測すると問題が見えなくなるので、性能判断は HDD 前提で行ってください。
 - 詳細な設計と計測値は `docs/design/spool-worker.md` にあります。
