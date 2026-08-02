@@ -1,0 +1,8 @@
+#!/bin/sh
+# Codex command hook: spool one event and exit without affecting Codex.
+set -u
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
+exec python3 -S "${REPO_ROOT}/src/agent_history/capture/hook_fast.py" "$@" codex

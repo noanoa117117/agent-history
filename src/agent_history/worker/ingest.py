@@ -36,6 +36,7 @@ class SpoolItem:
     event_name: str
     recorded_at_ns: int
     input_size: int
+    capture_source: str
     payload: Dict[str, Any]
 
 
@@ -98,12 +99,17 @@ def parse_spool_file(path: str) -> SpoolItem:
     if event_name not in EVENT_MAPPING:
         raise PermanentError(f"unsupported hook event: {event_name!r}")
 
+    capture_source = str(header.get("src") or "claude-code")
+    if capture_source not in {"claude-code", "codex"}:
+        raise PermanentError(f"unsupported capture source: {capture_source!r}")
+
     return SpoolItem(
         path=path,
         uid=str(header.get("uid") or os.path.basename(path)),
         event_name=str(event_name),
         recorded_at_ns=int(header.get("ts_ns") or 0),
         input_size=int(header.get("size") or len(payload_bytes)),
+        capture_source=capture_source,
         payload=payload,
     )
 
@@ -130,15 +136,19 @@ def quarantine(root: str, path: str, reason: str) -> Optional[str]:
 
 
 def _resolve_session(
-    connection: sqlite3.Connection, claude_session_id: str, payload: Mapping[str, Any], occurred_at: str
+    connection: sqlite3.Connection,
+    capture_source: str,
+    source_session_id: str,
+    payload: Mapping[str, Any],
+    occurred_at: str,
 ) -> str:
     row = connection.execute(
         """
         SELECT id FROM sessions
-        WHERE source = 'claude-code' AND source_session_id = ?
+        WHERE source = ? AND source_session_id = ?
         ORDER BY created_at LIMIT 1
         """,
-        (claude_session_id,),
+        (capture_source, source_session_id),
     ).fetchone()
     if row is not None:
         session_id = str(row["id"])
@@ -165,11 +175,12 @@ def _resolve_session(
         INSERT INTO sessions (
             id, source, source_session_id, model, started_at,
             initial_cwd, host_name, title, capture_status, metadata_json, created_at
-        ) VALUES (?, 'claude-code', ?, ?, ?, ?, ?, ?, 'capturing', ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'capturing', ?, ?)
         """,
         (
             session_id,
-            claude_session_id,
+            capture_source,
+            source_session_id,
             payload.get("model"),
             occurred_at,
             payload.get("cwd"),
@@ -197,15 +208,16 @@ def ingest_batch(
     sessions: Dict[str, str] = {}
 
     for item, prepared in items:
-        claude_session_id = str(item.payload["session_id"])
+        source_session_id = str(item.payload["session_id"])
         occurred_at = _iso_from_ns(item.recorded_at_ns) if item.recorded_at_ns else utc_now_iso()
 
-        session_id = sessions.get(claude_session_id)
+        session_key = f"{item.capture_source}:{source_session_id}"
+        session_id = sessions.get(session_key)
         if session_id is None:
             session_id = _resolve_session(
-                connection, claude_session_id, item.payload, occurred_at
+                connection, item.capture_source, source_session_id, item.payload, occurred_at
             )
-            sessions[claude_session_id] = session_id
+            sessions[session_key] = session_id
 
         if session_id not in sequences:
             # One MAX() per session per batch instead of one per event.
@@ -217,6 +229,8 @@ def ingest_batch(
             )
 
         event_type, actor = EVENT_MAPPING[prepared.event_name]
+        if item.capture_source == "codex" and actor == "claude":
+            actor = "codex"
         next_sequence = sequences[session_id] + 1
         cursor = connection.execute(
             """
@@ -287,7 +301,9 @@ def prepare_items(
     for path in paths:
         try:
             item = parse_spool_file(path)
-            event = prepare_event(item.event_name, item.payload, config, item.input_size)
+            payload = dict(item.payload)
+            payload["_agent_history_source"] = item.capture_source
+            event = prepare_event(item.event_name, payload, config, item.input_size)
         except PermanentError as exc:
             quarantine(root, path, str(exc))
             quarantined += 1

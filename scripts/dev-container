@@ -23,6 +23,7 @@ commands:
   shell       Open a shell in the running container
   claude      Run Claude Code in the running container
   codex       Run Codex CLI in the running container
+  codex-external-sandbox Run Codex CLI with external Docker isolation
   codex-login Authenticate Codex CLI (browser/device login)
   codex-status Show Codex CLI login status
   gh-login    Authenticate GitHub CLI using HTTPS device/web login
@@ -101,6 +102,10 @@ case "$command" in
         ;;
     codex)
         compose exec -it agent-history-dev codex "$@"
+        ;;
+    codex-external-sandbox)
+        compose exec -it agent-history-dev codex \
+            --dangerously-bypass-approvals-and-sandbox "$@"
         ;;
     codex-login)
         compose exec -it agent-history-dev codex login "$@"

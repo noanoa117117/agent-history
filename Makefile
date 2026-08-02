@@ -1,4 +1,4 @@
-.PHONY: dev-build dev-start dev-host-status dev-host-pull dev-shell dev-claude dev-codex dev-codex-login \
+.PHONY: dev-build dev-start dev-host-status dev-host-pull dev-shell dev-claude dev-codex dev-codex-external-sandbox dev-codex-login \
 	dev-codex-status dev-gh-login dev-gh-status \
 	dev-git-status dev-git-log dev-pull dev-push dev-test dev-logs dev-status \
 	dev-worker-start dev-worker-stop dev-worker-restart dev-worker-status \
@@ -24,6 +24,9 @@ dev-claude:
 
 dev-codex:
 	./scripts/dev-container codex $(CODEX_ARGS)
+
+dev-codex-external-sandbox:
+	./scripts/dev-container codex-external-sandbox $(CODEX_ARGS)
 
 dev-codex-login:
 	./scripts/dev-container codex-login

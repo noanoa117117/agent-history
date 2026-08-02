@@ -19,6 +19,7 @@ class SanitizerTests(unittest.TestCase):
                 "203.0.113.9",
                 "Authorization: Bearer abcdef123456",
                 "api_key: abcdef1234567890",
+                "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
                 "-----BEGIN PRIVATE KEY-----",
                 "fake-key-material",
                 "-----END PRIVATE KEY-----",
@@ -31,6 +32,7 @@ class SanitizerTests(unittest.TestCase):
         self.assertIn(REDACTED_SECRET, result.text)
         self.assertIn(REDACTED_PRIVATE_KEY, result.text)
         self.assertNotIn("abcdef123456", result.text)
+        self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz1234567890", result.text)
 
     def test_examples_and_known_placeholders_are_preserved(self):
         text = "Ubuntu 24.04.1.2 <ACCOUNT_ID> <INTERNAL_IP> <CLIENT_SECRET> user@example.com cockpit.example.com"

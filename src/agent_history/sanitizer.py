@@ -32,6 +32,9 @@ _BEARER_RE = re.compile(
     r"(?i)(\bBearer\s+)(?!<[^>\s]+>)[A-Za-z0-9._~+/=-]+"
 )
 _AWS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
+_GITHUB_TOKEN_RE = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
+)
 # The label may carry a prefix joined by an underscore, dot, or dash, so that
 # shell-style names such as GITHUB_TOKEN or DB_PASSWORD are recognized. A plain
 # \b would not match there, because an underscore is a word character.
@@ -136,6 +139,7 @@ def sanitize_text(text: str) -> SanitizedText:
     sanitized = _PRIVATE_KEY_HEADER_RE.sub(REDACTED_PRIVATE_KEY, sanitized)
     sanitized = _BEARER_RE.sub(lambda match: f"{match.group(1)}{REDACTED_SECRET}", sanitized)
     sanitized = _AWS_KEY_RE.sub(REDACTED_SECRET, sanitized)
+    sanitized = _GITHUB_TOKEN_RE.sub(REDACTED_SECRET, sanitized)
     sanitized = _COOKIE_RE.sub(_replace_labeled_secret, sanitized)
     sanitized = _LABELED_SECRET_RE.sub(_replace_labeled_secret, sanitized)
     sanitized = _URL_SECRET_RE.sub(_replace_url_secret, sanitized)

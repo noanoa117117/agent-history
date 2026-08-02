@@ -2,7 +2,7 @@
 
 Ubuntu 上で AI と人間の作業履歴を SQLite に保存し、SQLite FTS5 で検索するローカル CLI です。Codex、Claude Code、ブラウザ版 AI、シェル操作などの観測可能な入出力を、将来の作業再利用や記事生成に渡せるコンテキストとして蓄積することを目的にしています。
 
-Stage 1 では利用者が CLI で session と event を登録します。Stage 2 では Claude Code の command hooks を単一のローカル受信アダプターへ集約し、観測可能なライフサイクルイベントを自動保存できます。
+Stage 1 では利用者が CLI で session と event を登録します。Stage 2 では Claude Code と Codex CLI の command hooks を単一のローカル受信アダプターへ集約し、観測可能なライフサイクルイベントを自動保存できます。
 
 ## なぜ project 中心ではなく session 中心か
 
@@ -34,6 +34,7 @@ Claude Code と Codex CLI はどちらも「CLI本体はimage、認証情報はv
     make dev-start
     make dev-claude          # Claude Code
     make dev-codex           # Codex CLI
+    make dev-codex-external-sandbox # Codex CLI（推奨）
     make dev-codex-login     # 初回のみ
     make dev-codex-status
 
@@ -282,6 +283,28 @@ spool ファイルは `tmp/` に書いてから `os.replace` で `pending/` へ�
 
 `WorktreeCreate` だけは受動的な記録 Hook として設定していません。Claude Code の公式仕様では、この Hook が成功すると作成した worktree のパスを stdout に返す必要があり、記録専用アダプターが登録されると標準の worktree 作成を置き換えてしまうためです。アダプター自体は入力を受けた場合の変換を実装しています。`FileChanged` は matcher を取らないイベントなので、matcher なしで登録します。
 
+### Codex CLI の公式hooks
+
+Codexはリポジトリ内の[.codex/hooks.json](.codex/hooks.json)で、`SessionStart`、`UserPromptSubmit`、`Stop`、`SessionEnd`だけを記録します。Codexから渡されるstdin JSONを`bin/agent-history-codex-hook`が既存spoolへ置き、常駐workerがサニタイズしてSQLite/FTSへ取り込みます。
+
+```text
+Codex official hook → agent-history-codex-hook → spool → worker → SQLite / FTS
+```
+
+初回はコンテナ内で次を実行し、project-local hookを明示的に確認・信頼します。
+
+```bash
+make dev-codex-external-sandbox
+# Codex TUI内で: /hooks
+# 4件を確認して t を押し、trust all を実行
+```
+
+`--dangerously-bypass-approvals-and-sandbox`はDockerコンテナを外部sandboxとして使うための設定で、hook trustとは別です。通常運用では`--dangerously-bypass-hook-trust`を使いません。hookの追加・変更後は再度`/hooks`で確認して信頼してください。
+
+保存するのはsession ID、turn ID、prompt、最終応答、cwd、model、開始元または終了理由です。`transcript_path`、rollout JSONL、Codex認証情報、内部SQLite、環境変数、system/developer prompt、内部推論、ツール生出力は読み取りも保存もしません。`source=codex`でClaude Codeの記録と区別できます。
+
+rollout JSONLは初期収集経路ではありません。将来、hook導入前の履歴インポート、hookで取得できない情報の補完、障害時の再取り込みを検討する場合だけ、別途互換性を確認した上で扱います。
+
 ### イベントプリセット
 
 全 30 イベントを既定で登録すると、高頻度イベントが spool を圧迫します。そのため既定は `balanced` です。
@@ -407,7 +430,7 @@ DB 本体、`-shm`、`-wal` は `.gitignore` で Git 管理対象外です。秘
 ### Stage 2
 
 - Claude Code Hooks 連携（実装済み）
-- Codex ログ収集
+- Codex CLI 公式hooks連携（実装済み）
 - Git 差分収集
 
 ### Stage 3

@@ -561,6 +561,8 @@ def _tool_summary(tool_name: str, tool_input: Any) -> str:
 
 
 def _content(event_name: str, payload: Mapping[str, Any], maximum: int) -> Tuple[str, bool]:
+    provider = str(payload.get("_agent_history_source") or "claude-code")
+    agent_name = "Codex" if provider == "codex" else "Claude"
     tool_name = str(payload.get("tool_name") or "tool")
     if event_name == "UserPromptSubmit":
         text = _value_text(payload.get("prompt"))
@@ -577,15 +579,15 @@ def _content(event_name: str, payload: Mapping[str, Any], maximum: int) -> Tuple
         calls = payload.get("tool_calls")
         text = f"PostToolBatch: {len(calls) if isinstance(calls, list) else 0} tool calls"
     elif event_name == "Notification":
-        text = "Claude Code notification: " + _value_text(payload.get("message"))
+        text = f"{agent_name} notification: " + _value_text(payload.get("message"))
     elif event_name == "Stop":
-        text = _value_text(payload.get("last_assistant_message")) or "Claude response completed"
+        text = _value_text(payload.get("last_assistant_message")) or f"{agent_name} response completed"
     elif event_name == "StopFailure":
-        text = "Claude response failed: " + _value_text(payload.get("error") or payload.get("last_assistant_message"))
+        text = f"{agent_name} response failed: " + _value_text(payload.get("error") or payload.get("last_assistant_message"))
     elif event_name == "SessionStart":
-        text = f"Claude session started ({_value_text(payload.get('source')) or 'unknown'})"
+        text = f"{agent_name} session started ({_value_text(payload.get('source')) or 'unknown'})"
     elif event_name == "SessionEnd":
-        text = f"Claude session ended ({_value_text(payload.get('reason')) or 'unknown'})"
+        text = f"{agent_name} session ended ({_value_text(payload.get('reason')) or 'unknown'})"
     elif event_name in {"SubagentStart", "SubagentStop"}:
         text = f"{event_name}: {_value_text(payload.get('agent_type') or payload.get('agent_id'))}"
         if event_name == "SubagentStop" and payload.get("last_assistant_message"):
@@ -681,6 +683,26 @@ def prepare_event(
     input_size: int,
 ) -> PreparedEvent:
     """Sanitize, truncate, and project one hook payload into event fields."""
+
+    if payload.get("_agent_history_source") == "codex":
+        allowed = {
+            "SessionStart": {
+                "session_id", "hook_event_name", "cwd", "model", "source",
+                "permission_mode", "_agent_history_source",
+            },
+            "UserPromptSubmit": {
+                "session_id", "hook_event_name", "turn_id", "prompt", "cwd", "model",
+                "permission_mode", "_agent_history_source",
+            },
+            "Stop": {
+                "session_id", "hook_event_name", "turn_id", "last_assistant_message", "cwd",
+                "model", "permission_mode", "_agent_history_source",
+            },
+            "SessionEnd": {
+                "session_id", "hook_event_name", "reason", "cwd", "_agent_history_source",
+            },
+        }
+        payload = {key: value for key, value in payload.items() if key in allowed.get(event_name, set())}
 
     limited_payload, content_json, sanitized_changed, truncated = _prepare_payload(
         payload, event_name, config, input_size

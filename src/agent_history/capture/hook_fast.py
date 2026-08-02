@@ -35,6 +35,7 @@ def _debug(message):
 
 def run(argv, stdin=None):
     event_name = argv[0] if argv else "unknown"
+    source = argv[1] if len(argv) > 1 else None
     stream = stdin if stdin is not None else sys.stdin.buffer
     data, total = spool.read_input(stream)
     if not data:
@@ -48,7 +49,7 @@ def run(argv, stdin=None):
         _debug("pending spool is full, dropping event")
         return None
 
-    return spool.write_event(root, event_name, data, total_size=total)
+    return spool.write_event(root, event_name, data, total_size=total, source=source)
 
 
 def main(argv=None):

@@ -103,7 +103,7 @@ def new_uid(pid=None):
     return "%019d-%d-%s" % (time.time_ns(), pid, os.urandom(4).hex())
 
 
-def build_header(uid, event_name, size, pid=None, truncated=False):
+def build_header(uid, event_name, size, pid=None, truncated=False, source=None):
     """Build the envelope header line without importing `json`.
 
     Every interpolated value is machine-generated and restricted to digits,
@@ -112,7 +112,7 @@ def build_header(uid, event_name, size, pid=None, truncated=False):
 
     if pid is None:
         pid = os.getpid()
-    return '{"v":%d,"uid":"%s","ev":"%s","ts_ns":%d,"pid":%d,"size":%d,"truncated":%s}' % (
+    header = '{"v":%d,"uid":"%s","ev":"%s","ts_ns":%d,"pid":%d,"size":%d,"truncated":%s' % (
         SCHEMA_VERSION,
         uid,
         safe_label(event_name),
@@ -121,6 +121,9 @@ def build_header(uid, event_name, size, pid=None, truncated=False):
         size,
         "true" if truncated else "false",
     )
+    if source:
+        header += ',"src":"%s"' % safe_label(source)
+    return header + "}"
 
 
 def _write_all(fd, data):
@@ -168,7 +171,7 @@ def should_check_pending(sample=PENDING_CHECK_SAMPLE):
     return os.urandom(1)[0] < max(1, 256 // sample)
 
 
-def write_event(root, event_name, data, total_size=None, uid=None):
+def write_event(root, event_name, data, total_size=None, uid=None, source=None):
     """Write one spool file and atomically publish it to pending/.
 
     No fsync: durability is deliberately traded for latency (see
@@ -185,7 +188,9 @@ def write_event(root, event_name, data, total_size=None, uid=None):
     name = "%s-%s%s" % (uid, label, FILE_SUFFIX)
     tmp_path = os.path.join(root, DIR_TMP, name)
     pending_path = os.path.join(root, DIR_PENDING, name)
-    header = build_header(uid, event_name, total_size, truncated=total_size > len(data))
+    header = build_header(
+        uid, event_name, total_size, truncated=total_size > len(data), source=source
+    )
 
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
     try:
