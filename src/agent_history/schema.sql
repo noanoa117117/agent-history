@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS events (
     content TEXT,
     content_json TEXT,
 
+    source_event_id TEXT,
+    payload_size INTEGER,
+    truncated INTEGER NOT NULL DEFAULT 0,
+    dedup_key TEXT,
+
     cwd TEXT,
     exit_code INTEGER,
     occurred_at TEXT NOT NULL,

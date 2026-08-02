@@ -10,6 +10,7 @@ from typing import Any, Optional, Sequence
 
 from .commands import CommandError
 from .commands import event as event_commands
+from .commands import claude_hook as claude_hook_commands
 from .commands import export as export_commands
 from .commands import init_db
 from .commands import search as search_commands
@@ -111,6 +112,19 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--session", dest="session_id")
     _add_context_options(export)
     export.add_argument("--output")
+
+    # These subcommands deliberately do not declare their own --db: a subparser
+    # option of the same name overwrites the global one with its own default,
+    # which silently pointed them at the default database.
+    hook_status = subparsers.add_parser(
+        "claude-hook-status", help="show Claude Code hook installation and capture status"
+    )
+    hook_status.add_argument("--scope", choices=("user", "project", "local"), default="user")
+
+    claude_sessions = subparsers.add_parser(
+        "claude-sessions", help="list sessions captured from Claude Code"
+    )
+    claude_sessions.add_argument("--limit", type=int, default=20)
 
     return parser
 
@@ -220,6 +234,10 @@ def _run(args: argparse.Namespace) -> str:
             context_after=args.context_after,
             output=args.output,
         )
+    if args.command == "claude-hook-status":
+        return claude_hook_commands.status(db_path=db_path, scope=args.scope)
+    if args.command == "claude-sessions":
+        return claude_hook_commands.claude_sessions(db_path, limit=args.limit)
     raise CommandError("a command is required; use --help for usage")
 
 

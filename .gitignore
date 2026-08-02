@@ -9,6 +9,8 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 !data/.gitkeep
+data/dead-letter/*
+data/logs/*
 
 .env
 .env.*

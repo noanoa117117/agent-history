@@ -1,0 +1,10 @@
+{
+  "session_id": "claude-fixture-session",
+  "transcript_path": "/home/amida/.claude/projects/example/claude-fixture-session.jsonl",
+  "cwd": "/home/amida/projects/agent-history",
+  "permission_mode": "default",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-sonnet-4-5",
+  "session_title": "Claude hook fixture"
+}

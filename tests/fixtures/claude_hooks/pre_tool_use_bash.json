@@ -1,0 +1,14 @@
+{
+  "session_id": "claude-fixture-session",
+  "transcript_path": "/home/amida/.claude/projects/example/claude-fixture-session.jsonl",
+  "cwd": "/home/amida/projects/agent-history",
+  "permission_mode": "default",
+  "prompt_id": "6f1d0a52-1c4e-4f0b-9a77-2f3b7c8d0001",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu-fixture-bash-001",
+  "tool_input": {
+    "command": "printf 'fixture-command'",
+    "description": "fixture command"
+  }
+}

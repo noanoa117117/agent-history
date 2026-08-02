@@ -80,6 +80,30 @@ class SanitizerTests(unittest.TestCase):
         self.assertEqual(sanitize_text("203.0.113.9").text, REDACTED_IP)
         self.assertEqual(sanitize_text("host 198.51.100.7 down").text, f"host {REDACTED_IP} down")
 
+    def test_cookie_private_key_and_embedded_json_are_redacted(self):
+        for text in [
+            "Cookie: session=dummy-value-1",
+            "Set-Cookie: sid=dummy-value-2; Path=/",
+            "private_key: dummy-value-3",
+            'payload={"password":"dummy-value-4","api_key":"dummy-value-5"}',
+        ]:
+            with self.subTest(text=text):
+                result = sanitize_text(text)
+                self.assertTrue(result.changed)
+                self.assertNotIn("dummy-value", result.text)
+                self.assertIn(REDACTED_SECRET, result.text)
+
+    def test_json_cookie_and_private_key_object_keys_are_redacted(self):
+        result = normalize_json(
+            '{"headers":{"Cookie":"dummy-value-1","Set-Cookie":"dummy-value-2"},'
+            '"private_key":"dummy-value-3","note":"keep"}'
+        )
+        payload = json.loads(result.text)
+        self.assertEqual(payload["headers"]["Cookie"], REDACTED_SECRET)
+        self.assertEqual(payload["headers"]["Set-Cookie"], REDACTED_SECRET)
+        self.assertEqual(payload["private_key"], REDACTED_SECRET)
+        self.assertEqual(payload["note"], "keep")
+
     def test_json_secret_keys_are_redacted(self):
         result = normalize_json('{"GITHUB_TOKEN":"dummy-value","note":"ok"}')
         self.assertTrue(result.changed)

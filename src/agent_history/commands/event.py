@@ -36,6 +36,10 @@ def add_event(
     exit_code: Optional[int] = None,
     occurred_at: Optional[str] = None,
     no_sanitize: bool = False,
+    source_event_id: Optional[str] = None,
+    payload_size: Optional[int] = None,
+    truncated: bool = False,
+    dedup_key: Optional[str] = None,
 ) -> int:
     raw_content = _read_content(content, content_file)
     if raw_content is None and content_json is None:
@@ -75,28 +79,53 @@ def add_event(
                     (session_id,),
                 ).fetchone()
                 sequence_no = int(sequence_row["next_sequence"])
-                cursor = connection.execute(
+                values = (
+                    session_id,
+                    sequence_no,
+                    event_type,
+                    actor,
+                    content_result.text if content_result else None,
+                    json_result.text if json_result else None,
+                    source_event_id,
+                    payload_size,
+                    int(truncated),
+                    dedup_key,
+                    cwd,
+                    exit_code,
+                    timestamp,
+                    sensitivity,
+                    created_at,
+                )
+                if dedup_key is None:
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO events (
+                            session_id, sequence_no, event_type, actor, content,
+                            content_json, source_event_id, payload_size, truncated,
+                            dedup_key, cwd, exit_code, occurred_at, sensitivity, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        values,
+                    )
+                    return int(cursor.lastrowid)
+                connection.execute(
                     """
                     INSERT INTO events (
                         session_id, sequence_no, event_type, actor, content,
-                        content_json, cwd, exit_code, occurred_at, sensitivity, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        content_json, source_event_id, payload_size, truncated,
+                        dedup_key, cwd, exit_code, occurred_at, sensitivity, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, dedup_key) DO NOTHING
                     """,
-                    (
-                        session_id,
-                        sequence_no,
-                        event_type,
-                        actor,
-                        content_result.text if content_result else None,
-                        json_result.text if json_result else None,
-                        cwd,
-                        exit_code,
-                        timestamp,
-                        sensitivity,
-                        created_at,
-                    ),
+                    values,
                 )
-                return int(cursor.lastrowid)
+                existing = connection.execute(
+                    "SELECT id FROM events WHERE session_id = ? AND dedup_key = ?",
+                    (session_id, dedup_key),
+                ).fetchone()
+                if existing is None:
+                    raise CommandError("event deduplication lookup failed")
+                return int(existing["id"])
         except CommandError:
             raise
         except sqlite3.IntegrityError as exc:

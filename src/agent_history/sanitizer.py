@@ -35,14 +35,23 @@ _AWS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
 # The label may carry a prefix joined by an underscore, dot, or dash, so that
 # shell-style names such as GITHUB_TOKEN or DB_PASSWORD are recognized. A plain
 # \b would not match there, because an underscore is a word character.
+#
+# The separator tolerates a closing quote before the delimiter so that JSON
+# encoded inside a string value ('{"password":"..."}' carried as one hook
+# field) is redacted too.
 _LABELED_SECRET_RE = re.compile(
     r"(?ix)"
     r"(?P<label>(?<![A-Za-z0-9])"
-    r"(?:api[_ -]?key|secret[_ -]?key|access[_ -]?token|refresh[_ -]?token"
-    r"|client[_ -]?secret|token|secret|password|passwd)\b)"
-    r"(?P<separator>\s*[:=]\s*)"
+    r"(?:api[_ -]?key|secret[_ -]?key|private[_ -]?key|access[_ -]?token"
+    r"|refresh[_ -]?token|client[_ -]?secret|token|secret|password|passwd)\b)"
+    r"(?P<separator>['\"]?\s*[:=]\s*)"
     r"(?P<quote>['\"]?)"
     r"(?P<value>(?!<[^>\n]+>)[^\s,;\"'&]+)"
+)
+# HTTP cookie headers carry session credentials in their whole value.
+_COOKIE_RE = re.compile(
+    r"(?i)(?P<label>\b(?:set-)?cookie)(?P<separator>['\"]?\s*[:=]\s*)"
+    r"(?P<quote>['\"]?)(?P<value>(?!<[^>\n]+>)[^\r\n\"']+)"
 )
 _URL_SECRET_RE = re.compile(
     r"(?i)(?P<prefix>[?&](?:token|api[_-]?key|key|secret|access[_-]?token|password)=)"
@@ -58,8 +67,9 @@ _IP_RE = re.compile(
 # "token", "api_key", "GITHUB_TOKEN", "db.password".
 _SECRET_KEY_RE = re.compile(
     r"(?:^|[_.-])"
-    r"(?:api[_-]?key|secret[_-]?key|access[_-]?token|refresh[_-]?token"
-    r"|client[_-]?secret|token|secret|password|passwd)$",
+    r"(?:api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?token"
+    r"|refresh[_-]?token|client[_-]?secret|token|secret|password|passwd"
+    r"|cookie|authorization)$",
     re.IGNORECASE,
 )
 
@@ -126,6 +136,7 @@ def sanitize_text(text: str) -> SanitizedText:
     sanitized = _PRIVATE_KEY_HEADER_RE.sub(REDACTED_PRIVATE_KEY, sanitized)
     sanitized = _BEARER_RE.sub(lambda match: f"{match.group(1)}{REDACTED_SECRET}", sanitized)
     sanitized = _AWS_KEY_RE.sub(REDACTED_SECRET, sanitized)
+    sanitized = _COOKIE_RE.sub(_replace_labeled_secret, sanitized)
     sanitized = _LABELED_SECRET_RE.sub(_replace_labeled_secret, sanitized)
     sanitized = _URL_SECRET_RE.sub(_replace_url_secret, sanitized)
     sanitized = _EMAIL_RE.sub(_replace_email, sanitized)
