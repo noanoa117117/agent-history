@@ -133,6 +133,13 @@ def build_parser() -> argparse.ArgumentParser:
     worker_start.add_argument("--detach", action="store_true")
     worker_start.add_argument("--batch-size", type=int, default=50)
 
+    worker_run = subparsers.add_parser(
+        "worker-run",
+        help="run the spool worker in the foreground (container entry point)",
+    )
+    worker_run.add_argument("--batch-size", type=int, default=50)
+    worker_run.add_argument("--db-wait-seconds", type=float, default=60.0)
+
     subparsers.add_parser("worker-stop", help="stop the running spool worker")
     subparsers.add_parser("worker-status", help="show worker and spool state")
 
@@ -264,6 +271,12 @@ def _run(args: argparse.Namespace) -> str:
     if args.command == "worker-start":
         return worker_commands.worker_start(
             db_path=db_path, detach=args.detach, batch_size=args.batch_size
+        )
+    if args.command == "worker-run":
+        return worker_commands.worker_run(
+            db_path=db_path,
+            batch_size=args.batch_size,
+            db_wait_seconds=args.db_wait_seconds,
         )
     if args.command == "worker-stop":
         return worker_commands.worker_stop(db_path=db_path)

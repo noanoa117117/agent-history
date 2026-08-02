@@ -17,7 +17,7 @@ import fcntl
 import os
 import signal
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from ..capture import spool
 from ..capture.claude_hook import hook_config
@@ -96,13 +96,23 @@ class Worker:
         *,
         batch_size: int = DEFAULT_BATCH_SIZE,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
+        logger: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.db_path = get_db_path(db_path)
         self.config = hook_config(self.db_path)
         self.root = spool.spool_root(self.db_path)
         self.batch_size = batch_size
         self.poll_interval = poll_interval
+        self.logger = logger
         self._stopping = False
+
+    def log(self, message: str) -> None:
+        if self.logger is not None:
+            self.logger(message)
+
+    @property
+    def stopping(self) -> bool:
+        return self._stopping
 
     def request_stop(self, *_: object) -> None:
         self._stopping = True
@@ -127,6 +137,10 @@ class Worker:
             batch = ingest_batch(connection, prepared)
         result.inserted = batch.inserted
         result.duplicates = batch.duplicates
+        self.log(
+            "batch committed: inserted=%d duplicates=%d quarantined=%d"
+            % (result.inserted, result.duplicates, result.quarantined)
+        )
 
         # Only after the commit: a crash before this point simply replays the
         # batch, which the dedup index absorbs.
@@ -155,17 +169,48 @@ class Worker:
                 f"database is not initialized: {self.db_path} (run 'agent-history init')"
             )
 
-    def run(self, *, drain_only: bool = False) -> BatchResult:
+    def acquire(self, *, wait: bool = False, wait_interval: float = 2.0) -> int:
+        """Take the spool lock, optionally waiting instead of failing.
+
+        A long-lived service waits: exiting on a busy lock would turn a
+        second writer into a container restart loop. One-shot commands do not
+        wait, so a duplicate start is reported immediately.
+        """
+
+        spool.ensure_dirs(self.root)
+        if not wait:
+            return acquire_lock(self.root)
+        announced = False
+        while True:
+            try:
+                return acquire_lock(self.root)
+            except WorkerBusyError:
+                if not announced:
+                    self.log(
+                        "another writer holds the spool lock; waiting for it to exit"
+                    )
+                    announced = True
+                if self._stopping:
+                    raise
+                time.sleep(wait_interval)
+
+    def run(
+        self,
+        *,
+        drain_only: bool = False,
+        wait_for_lock: bool = False,
+    ) -> BatchResult:
         """Hold the lock and process until stopped (or until drained)."""
 
         self._check_database()
         spool.ensure_dirs(self.root)
-        lock = acquire_lock(self.root)
+        lock = self.acquire(wait=wait_for_lock)
         totals = BatchResult()
         try:
             with connect_db(self.db_path, timeout=5.0) as connection:
                 if drain_only:
                     return self.drain(connection)
+                self.log("ready: polling %s every %.1fs" % (self.root, self.poll_interval))
                 while not self._stopping:
                     result = self.process_batch(connection)
                     totals.inserted += result.inserted
@@ -173,12 +218,11 @@ class Worker:
                     totals.quarantined += result.quarantined
                     if not result.handled:
                         time.sleep(self.poll_interval)
-                # A stop request finishes the batch in flight rather than
-                # abandoning it; anything still pending survives on disk.
-                final = self.drain(connection)
-                totals.inserted += final.inserted
-                totals.duplicates += final.duplicates
-                totals.quarantined += final.quarantined
+                # A stop request finishes the batch in flight; it does not try
+                # to drain a backlog, so shutdown stays inside Docker's grace
+                # period. Anything still pending is picked up on the next run
+                # and the dedup index absorbs any replay.
+                self.log("stop requested: finished the batch in flight")
         finally:
             release_lock(lock)
         return totals

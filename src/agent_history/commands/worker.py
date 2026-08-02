@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import os
 import signal
+import sqlite3
+import sys
 import time
 from typing import List, Optional
 
 from ..capture import spool
-from ..db import PathLike, get_db_path
+from ..db import PathLike, connect_db, get_db_path, init_database
+from ..timeutil import utc_now_iso
 from ..worker.runner import (
     DatabaseMissingError,
     Worker,
@@ -40,6 +43,111 @@ def _bytes(root: str, name: str) -> int:
     except FileNotFoundError:
         return 0
     return total
+
+
+REQUIRED_TABLES = ("sessions", "events", "events_fts")
+DEFAULT_DB_WAIT_SECONDS = 60.0
+
+
+def _log(message: str) -> None:
+    """Line-buffered stderr logging so `docker logs` shows progress live."""
+
+    sys.stderr.write(f"{utc_now_iso()} agent-history-worker: {message}\n")
+    sys.stderr.flush()
+
+
+def _schema_ready(db_path: PathLike) -> bool:
+    if not os.path.exists(db_path):
+        return False
+    try:
+        with connect_db(db_path, timeout=2.0) as connection:
+            present = {
+                row["name"]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+                )
+            }
+            if not set(REQUIRED_TABLES).issubset(present):
+                return False
+            # The worker's idempotent insert depends on this index existing.
+            indexes = {
+                row["name"]
+                for row in connection.execute("PRAGMA index_list(events)")
+            }
+            return "idx_events_session_dedup_key" in indexes
+    except sqlite3.Error:
+        return False
+
+
+def ensure_database_ready(
+    db_path: PathLike,
+    *,
+    timeout: float = DEFAULT_DB_WAIT_SECONDS,
+    log=_log,
+) -> None:
+    """Make the database usable, or give up with a reason.
+
+    Prefers running the existing idempotent initializer over merely waiting,
+    so a fresh data volume does not need a manual `agent-history init`. Only
+    runs it when the schema is actually missing: `init` rebuilds the FTS index,
+    which should not happen on every restart.
+
+    Bounded on purpose -- a worker that retried forever would hide a broken
+    volume behind an endless restart loop.
+    """
+
+    deadline = time.monotonic() + timeout
+    last_error: Optional[str] = None
+    attempted_init = False
+    while True:
+        try:
+            if _schema_ready(db_path):
+                return
+            if not attempted_init:
+                log(f"database is not initialized; applying schema to {db_path}")
+            attempted_init = True
+            init_database(db_path)
+            if _schema_ready(db_path):
+                log("database is ready")
+                return
+            last_error = "schema still incomplete after initialization"
+        except Exception as exc:  # noqa: BLE001 - report any cause, then retry
+            last_error = f"{type(exc).__name__}: {exc}"
+        if time.monotonic() >= deadline:
+            raise CommandError(
+                f"database not ready after {timeout:g}s: {db_path}"
+                + (f" ({last_error})" if last_error else "")
+            )
+        time.sleep(1.0)
+
+
+def worker_run(
+    *,
+    db_path: Optional[PathLike] = None,
+    batch_size: int = 50,
+    db_wait_seconds: float = DEFAULT_DB_WAIT_SECONDS,
+) -> str:
+    """Run the worker in the foreground. This is the container entry point.
+
+    Never daemonizes: under Compose the process must stay PID 1's child, or
+    the container would exit immediately and restart forever. Logs to stderr
+    as it goes rather than returning a summary at the end, and lets the
+    Worker's SIGTERM handler finish the in-flight batch.
+    """
+
+    path = get_db_path(db_path)
+    _log(f"starting: db={path} spool={spool.spool_root(path)} batch_size={batch_size}")
+    ensure_database_ready(path, timeout=db_wait_seconds)
+
+    worker = Worker(path, batch_size=batch_size, logger=_log)
+    worker.install_signal_handlers()
+    totals = worker.run(wait_for_lock=True)
+    _log(
+        "stopped: inserted=%d duplicates=%d quarantined=%d"
+        % (totals.inserted, totals.duplicates, totals.quarantined)
+    )
+    # Progress already went to stderr; returning text would print a stray line.
+    return ""
 
 
 def worker_start(

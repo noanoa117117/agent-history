@@ -55,6 +55,55 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Single-writer spool worker. Shares the dev image and the data volume, and
+  # nothing else: it needs no Claude/Codex/GitHub credentials, so those volumes
+  # are deliberately not mounted here.
+  agent-history-worker:
+    image: agent-history-dev:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DEV_UID: "${DEV_UID:-1000}"
+        DEV_GID: "${DEV_GID:-1000}"
+        CLAUDE_CODE_VERSION: "${CLAUDE_CODE_VERSION:-2.1.220}"
+        NODE_VERSION: "${NODE_VERSION:-24.18.1}"
+        CODEX_VERSION: "${CODEX_VERSION:-0.146.0}"
+    container_name: agent-history-worker
+    user: "${DEV_UID:-1000}:${DEV_GID:-1000}"
+    working_dir: /workspace/agent-history
+    # Foreground only. worker-start --detach would fork and exit, the container
+    # would go with it, and restart:unless-stopped would loop forever.
+    command: ["/usr/local/bin/agent-history-worker-run"]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    mem_limit: "512m"
+    mem_reservation: "256m"
+    memswap_limit: "512m"
+    cpus: "0.5"
+    pids_limit: 64
+    privileged: false
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
+    environment:
+      HOME: /home/amida
+      PYTHONPATH: /workspace/agent-history/src
+      AGENT_HISTORY_DB: /workspace/agent-history/data/agent_history.db
+      AGENT_HISTORY_REPO_PATH: /workspace/agent-history
+    volumes:
+      - agent-history-workspace:/workspace/agent-history:ro
+      - agent-history-data:/workspace/agent-history/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   agent-history-workspace:
     name: agent-history-workspace

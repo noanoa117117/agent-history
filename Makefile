@@ -1,7 +1,8 @@
 .PHONY: dev-build dev-start dev-host-status dev-host-pull dev-shell dev-claude dev-codex dev-codex-login \
 	dev-codex-status dev-gh-login dev-gh-status \
 	dev-git-status dev-git-log dev-pull dev-push dev-test dev-logs dev-status \
-	dev-stop dev-clean dev-purge
+	dev-worker-start dev-worker-stop dev-worker-restart dev-worker-status \
+	dev-worker-logs dev-worker-drain dev-stop dev-clean dev-purge
 
 dev-build:
 	./scripts/dev-container build
@@ -50,6 +51,24 @@ dev-push:
 
 dev-test:
 	./scripts/dev-container test
+
+dev-worker-start:
+	./scripts/dev-container worker-start
+
+dev-worker-stop:
+	./scripts/dev-container worker-stop
+
+dev-worker-restart:
+	./scripts/dev-container worker-restart
+
+dev-worker-status:
+	./scripts/dev-container worker-status
+
+dev-worker-logs:
+	./scripts/dev-container worker-logs
+
+dev-worker-drain:
+	./scripts/dev-container worker-drain
 
 dev-logs:
 	./scripts/dev-container logs

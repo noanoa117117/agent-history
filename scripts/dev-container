@@ -32,6 +32,12 @@ commands:
   pull        Clone initially or fast-forward-only pull an existing workspace
   push        Validate and push the current upstream branch without force
   test        Run the existing test suite with a timeout
+  worker-start   Start the worker service
+  worker-stop    Stop the worker service
+  worker-restart Restart the worker service
+  worker-status  Show worker service state and spool counts
+  worker-logs    Show bounded worker logs
+  worker-drain   Ingest everything currently spooled, then exit
   logs        Show bounded Docker logs
   status      Show Compose container status
   stop        Stop the container and preserve volumes
@@ -125,6 +131,29 @@ case "$command" in
         ;;
     test)
         compose run --rm --no-deps agent-history-dev /usr/local/bin/agent-history-test "$@"
+        ;;
+    worker-start)
+        compose up -d agent-history-worker "$@"
+        ;;
+    worker-stop)
+        compose stop agent-history-worker "$@"
+        ;;
+    worker-restart)
+        compose restart agent-history-worker "$@"
+        ;;
+    worker-status)
+        compose ps agent-history-worker
+        compose exec -T agent-history-dev \
+            env PYTHONPATH=/workspace/agent-history/src \
+            python3 -m agent_history worker-status
+        ;;
+    worker-logs)
+        compose logs --timestamps --tail="${LOG_TAIL:-200}" agent-history-worker "$@"
+        ;;
+    worker-drain)
+        compose exec -T agent-history-dev \
+            env PYTHONPATH=/workspace/agent-history/src \
+            python3 -m agent_history worker-drain "$@"
         ;;
     logs)
         compose logs --timestamps --tail="${LOG_TAIL:-200}" agent-history-dev "$@"

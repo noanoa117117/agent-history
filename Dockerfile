@@ -85,6 +85,7 @@ COPY --chmod=0755 container/agent-history-pull /usr/local/bin/agent-history-pull
 COPY --chmod=0755 container/agent-history-push /usr/local/bin/agent-history-push
 COPY --chmod=0755 container/agent-history-purge-check /usr/local/bin/agent-history-purge-check
 COPY --chmod=0755 container/agent-history-test /usr/local/bin/agent-history-test
+COPY --chmod=0755 container/agent-history-worker-run /usr/local/bin/agent-history-worker-run
 COPY --chmod=0755 container/run-timeboxed /usr/local/bin/run-timeboxed
 
 USER $DEV_UID:$DEV_GID

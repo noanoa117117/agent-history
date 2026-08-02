@@ -2,10 +2,12 @@ import io
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from agent_history.capture import hook_fast, spool
+from agent_history.commands import CommandError
 from agent_history.commands import worker as worker_commands
 from agent_history.db import connect_db, init_database
 from agent_history.presets import (
@@ -335,6 +337,157 @@ class PresetTests(unittest.TestCase):
                         handler["command"].endswith(" " + event_name),
                         f"{event_name} command must end with its event name",
                     )
+
+
+class DatabaseReadinessTests(WorkerTestCase):
+    def test_initializes_a_missing_database(self):
+        fresh = Path(self.temp_dir.name) / "fresh.db"
+        self.assertFalse(fresh.exists())
+        worker_commands.ensure_database_ready(fresh, timeout=10, log=lambda _m: None)
+        self.assertTrue(fresh.exists())
+        with connect_db(fresh) as connection:
+            names = {
+                row["name"]
+                for row in connection.execute("SELECT name FROM sqlite_master")
+            }
+        self.assertIn("events", names)
+        self.assertIn("events_fts", names)
+
+    def test_does_not_reinitialize_a_ready_database(self):
+        """init rebuilds the FTS index; it must not run on every restart."""
+
+        calls = []
+        original = worker_commands.init_database
+        worker_commands.init_database = lambda *a, **k: calls.append(a) or original(*a, **k)
+        try:
+            worker_commands.ensure_database_ready(
+                self.db_path, timeout=10, log=lambda _m: None
+            )
+        finally:
+            worker_commands.init_database = original
+        self.assertEqual(calls, [])
+
+    def test_gives_up_with_a_reason_instead_of_looping(self):
+        unusable = Path(self.temp_dir.name) / "no-such-dir" / "sub" / "x.db"
+        os.makedirs(unusable.parent.parent, exist_ok=True)
+        os.chmod(unusable.parent.parent, 0o500)
+        started = time.monotonic()
+        try:
+            with self.assertRaises(CommandError) as caught:
+                worker_commands.ensure_database_ready(
+                    unusable, timeout=2, log=lambda _m: None
+                )
+        finally:
+            os.chmod(unusable.parent.parent, 0o700)
+        self.assertIn("not ready after", str(caught.exception))
+        self.assertLess(time.monotonic() - started, 20)
+
+
+class ForegroundWorkerTests(WorkerTestCase):
+    def test_lock_wait_does_not_fail_immediately(self):
+        """The service waits for the lock; exiting would be a restart loop."""
+
+        worker = self.worker()
+        lock = acquire_lock(self.root)
+        try:
+            worker.request_stop()  # so the wait loop gives up promptly
+            with self.assertRaises(WorkerBusyError):
+                worker.acquire(wait=True, wait_interval=0.01)
+        finally:
+            release_lock(lock)
+        # Lock free again: acquiring now succeeds.
+        release_lock(worker.acquire(wait=True, wait_interval=0.01))
+
+    def test_one_shot_start_still_reports_a_busy_lock(self):
+        lock = acquire_lock(self.root)
+        try:
+            with self.assertRaises(WorkerBusyError):
+                self.worker().run(drain_only=True)
+        finally:
+            release_lock(lock)
+
+    def test_stop_finishes_the_batch_without_draining_the_backlog(self):
+        for index in range(30):
+            self.spool_event("UserPromptSubmit", prompt=f"p{index}")
+        worker = self.worker(batch_size=5)
+        messages = []
+        worker.logger = messages.append
+
+        original = worker.process_batch
+
+        def stop_after_first(connection):
+            result = original(connection)
+            worker.request_stop()
+            return result
+
+        worker.process_batch = stop_after_first
+        totals = worker.run()
+        self.assertEqual(totals.inserted, 5)
+        # The remaining 25 stay on disk for the next run rather than blocking
+        # shutdown past Docker's grace period.
+        self.assertEqual(len(self.pending()), 25)
+        self.assertTrue(any("stop requested" in m for m in messages))
+
+
+class ComposeWorkerServiceTests(unittest.TestCase):
+    """The worker service contract lives in compose.yaml, so assert it there."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import yaml
+        except ImportError:  # pragma: no cover - container image has no PyYAML
+            raise unittest.SkipTest("PyYAML is not installed")
+        path = Path(__file__).resolve().parents[1] / "compose.yaml"
+        cls.compose = yaml.safe_load(path.read_text(encoding="utf-8"))
+        cls.worker = cls.compose["services"]["agent-history-worker"]
+
+    def test_runs_in_the_foreground(self):
+        command = self.worker["command"]
+        joined = " ".join(command) if isinstance(command, list) else str(command)
+        self.assertIn("agent-history-worker-run", joined)
+        self.assertNotIn("--detach", joined)
+        self.assertNotIn("worker-start", joined)
+
+    def test_resource_limits(self):
+        self.assertEqual(self.worker["mem_limit"], "512m")
+        self.assertEqual(self.worker["mem_reservation"], "256m")
+        self.assertEqual(self.worker["memswap_limit"], "512m")
+        self.assertEqual(str(self.worker["cpus"]), "0.5")
+        self.assertEqual(self.worker["pids_limit"], 64)
+        self.assertEqual(self.worker["cap_drop"], ["ALL"])
+        self.assertIn("no-new-privileges:true", self.worker["security_opt"])
+        self.assertTrue(self.worker["init"])
+        self.assertEqual(self.worker["restart"], "unless-stopped")
+        self.assertEqual(self.worker["logging"]["options"]["max-size"], "10m")
+        self.assertEqual(self.worker["logging"]["options"]["max-file"], "3")
+
+    def test_volume_wiring(self):
+        mounts = self.worker["volumes"]
+        self.assertIn("agent-history-workspace:/workspace/agent-history:ro", mounts)
+        self.assertIn("agent-history-data:/workspace/agent-history/data", mounts)
+        joined = " ".join(mounts)
+        for secret_volume in (
+            "agent-history-claude-home",
+            "agent-history-codex-home",
+            "agent-history-github-auth",
+        ):
+            self.assertNotIn(secret_volume, joined, "worker needs no credentials")
+
+    def test_shares_the_dev_image_and_defines_no_new_volumes(self):
+        dev = self.compose["services"]["agent-history-dev"]
+        self.assertEqual(self.worker["image"], dev["image"])
+        declared = set(self.compose["volumes"])
+        self.assertEqual(
+            declared,
+            {
+                "agent-history-workspace",
+                "agent-history-claude-home",
+                "agent-history-codex-home",
+                "agent-history-github-auth",
+                "agent-history-data",
+            },
+        )
 
 
 if __name__ == "__main__":

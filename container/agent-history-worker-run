@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Container entry point for the spool worker service.
+#
+# exec's the worker so it becomes tini's direct child: SIGTERM from
+# `docker stop` reaches the worker itself rather than a shell that would
+# forward it late or not at all. Nothing here daemonizes -- if the process
+# forked and exited, the container would exit and `restart: unless-stopped`
+# would turn that into a restart loop.
+set -Eeuo pipefail
+
+repo="${AGENT_HISTORY_REPO_PATH:-/workspace/agent-history}"
+
+if [ ! -d "$repo/src/agent_history" ]; then
+    echo "agent-history-worker-run: repository not found at $repo" >&2
+    exit 1
+fi
+
+export PYTHONPATH="${repo}/src${PYTHONPATH:+:${PYTHONPATH}}"
+cd "$repo"
+
+# -u keeps stdout/stderr unbuffered so `docker compose logs` is live.
+exec python3 -u -m agent_history worker-run "$@"
