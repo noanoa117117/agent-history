@@ -16,6 +16,22 @@
 - 検索は FTS5 の MATCH と `events.content` の LIKE 部分一致の和集合です。LIKE は日本語のように分かち書きされない文を拾うためのフォールバックです。
 - そのため、FTS インデックスの同期テストを `search_events()` 経由で書いてはいけません。トリガーが壊れていても LIKE 側がヒットして通ってしまいます。`events_fts` を直接 MATCH して検証してください（`tests/test_events.py`、`tests/test_claude_hooks.py` 参照）。
 
+## Hook のクリティカルパス制約
+
+- Hook は Claude Code のクリティカルパス上で動きます。`bin/agent-history-claude-hook` → `capture/hook_fast.py` → `capture/spool.py` の経路に **重い import を足さないでください**。実測で `json` は +7.6ms、`agent_history.sanitizer`（`re` を引く）は +24ms かかり、25ms の予算を壊します。`tests/test_spool.py` が実際にロードされたモジュールを検査して防いでいます。
+- Hook は **SQLite を開かず、fsync せず、常に終了コード 0 を返します**。この3点は受け入れ条件そのものなのでテストで固定してあります。
+- 重い処理（JSON 解析、サニタイズ、切り詰め、DB 書き込み）は全て `worker/` 側で行います。hook 側へ移さないでください。
+- このリポジトリの検証環境は **回転ディスク**で、fsync 1回が約83msかかります。SSD で計測すると問題が見えなくなるので、性能判断は HDD 前提で行ってください。
+- 詳細な設計と計測値は `docs/design/spool-worker.md` にあります。
+
+## spool と worker の前提
+
+- 収集は **best-effort** です。欠損許容を前提に、`processing/` による所有権管理・孤児回収・リトライ・バックプレッシャ優先度制御は**意図的に実装していません**。「堅牢にするため」にこれらを足す前に、その必要性を確認してください。
+- 重複防止は既存の `UNIQUE(session_id, dedup_key)` に対する `ON CONFLICT DO NOTHING` だけで担保します。worker のクラッシュ時に `pending/` のファイルが再取り込みされる前提の設計です。
+- worker は `flock` で単一に保ちます。複数 writer を許すと SQLite のロック競合が戻ってきます。
+- バッチ commit（50件 or 1秒）が fsync 償却の要です。1イベント1トランザクションに戻さないでください。
+- イベントプリセットは `presets.py` が単一の情報源です。`config/claude-hooks.*.json` は生成物で、`tests/test_worker.py` がドリフトを検出します。手で編集しないでください。
+
 ## Claude Hook の落とし穴
 
 - `prompt_id` はイベントIDではなく「次のプロンプトまでの全イベントが共有するターン相関ID」です。重複防止キーに使うと、1ターン内の FileChanged / Notification / SubagentStart / TaskCreated などが 1 件に潰れます。イベント固有IDは `EVENT_IDENTITY_FIELDS` にイベントごとに定義してください。
@@ -45,10 +61,21 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 Claude Hook関連の確認には、次も実行します。
 
 ```bash
-bash -n bin/agent-history-claude-hook
+sh -n bin/agent-history-claude-hook
+bash -n bin/agent-history-worker
 bash -n scripts/install-claude-hooks
 bash -n scripts/uninstall-claude-hooks
 ./scripts/install-claude-hooks
+```
+
+spool と worker を変更した場合は、実際に一巡させて確認します。
+
+```bash
+export AGENT_HISTORY_DB=/tmp/ah/test.db AGENT_HISTORY_SPOOL_DIR=/tmp/ah/spool
+PYTHONPATH=src python3 -m agent_history init
+echo '{"session_id":"t","cwd":"/tmp","hook_event_name":"Stop"}' | ./bin/agent-history-claude-hook Stop
+PYTHONPATH=src python3 -m agent_history worker-drain
+PYTHONPATH=src python3 -m agent_history claude-sessions
 ```
 
 DB 初期化、CLI による session/event/target 登録、FTS5 検索、Markdown export も実際に確認します。

@@ -24,6 +24,8 @@ AI 内部の非表示な思考過程は保存対象にしません。保存対�
 
 追加パッケージは不要です。Ubuntu の Python 3.9 以上を想定しています。SQLite が FTS5 を有効にしている必要があります。
 
+ホストのメモリを保護しながら開発・テスト・Claude Code・GitHub操作を行うDocker構成は、[Docker隔離開発環境](docs/docker-development.md)を参照してください。Git作業ツリー、Claude設定、GitHub認証、SQLiteデータは専用named volumeへ分離します。
+
 ```bash
 cd /home/amida/projects/agent-history
 ./bin/agent-history --help
@@ -172,6 +174,73 @@ cat /tmp/cockpit-context.md
 
 Claude Code の stdin JSON を `bin/agent-history-claude-hook` で受け取り、既存の SQLite DB へ保存します。Hook は外部通信をせず、AI 内部の非表示な思考過程や transcript 本文を読み込みません。保存するのは Claude Code が Hook に渡す観測可能な入力・出力、ツール名、入力・結果の制限付き投影、通知、エラー、作業ディレクトリなどです。
 
+### 収集は best-effort です
+
+**agent-history は Claude Code をブロックしない best-effort な履歴収集ツールです。イベントの取りこぼしが起こりえます。**
+
+Hook は Claude Code のクリティカルパス上で動くため、**fsync を一切行いません**。この設計上のトレードオフとして:
+
+- OS クラッシュや電源断が起きると、**直前の数秒間のイベントが失われる可能性があります**
+- worker を起動していない間もイベントは spool に貯まりますが、spool 上限（既定 50,000 件）を超えると新しいイベントは捨てられます
+- 破損したイベントはリトライせず `data/spool/failed/` へ隔離します
+
+一方で **SQLite 本体は `synchronous=FULL` を維持**しており、DB ファイル自体の整合性は保たれます。速度のために `synchronous=OFF` を標準設定にすることはしません。
+
+### アーキテクチャ: spool と worker
+
+Hook が直接 SQLite へ書き込む方式は、回転ディスク環境で 1 イベントあたり約 268 ms かかり、Claude Code が体感できるほど重くなりました。内訳は commit 時の fsync が 153 ms、接続 close 時の WAL チェックポイントが 66 ms です（このマシンの生の fsync は 1 回 83 ms）。
+
+現在は 2 段構成です。
+
+```
+Claude Code ──> bin/agent-history-claude-hook ──> data/spool/pending/  (約12ms, fsync なし)
+                                                          │
+                          agent-history worker-start ─────┘
+                                                          ↓
+                                        50件 or 1秒ごとに 1 トランザクション ──> SQLite
+```
+
+- **Hook**: stdin を読んで spool ファイルを 1 つ置き、即座に終了します。SQLite を開かず、JSON を解析せず、サニタイズもしません（`json` の import だけで 7.6 ms、サニタイザは 24 ms かかり、予算を超えるため）
+- **Worker**: 単一プロセス（`flock` で保証）が spool をバッチ取り込みします。JSON 解析、サニタイズ、切り詰め、FTS 更新は全てここで行われます
+
+バッチ化により fsync は最大 50 イベントで 1 回に償却されます。
+
+| | 変更前 | 変更後 |
+|---|---|---|
+| Hook レイテンシ (p95) | 268 ms | **18.5 ms** |
+| Hook が SQLite を開く | はい | いいえ |
+| クリティカルパス上の fsync | 2 回 | **0 回** |
+
+#### worker の起動
+
+**worker を起動しないとイベントは DB に入りません**（spool には貯まり続けます）。
+
+```bash
+./bin/agent-history worker-start            # フォアグラウンド実行
+./bin/agent-history worker-start --detach   # バックグラウンド実行
+./bin/agent-history worker-status
+./bin/agent-history worker-drain            # 今ある分だけ取り込んで終了
+./bin/agent-history worker-stop
+```
+
+```bash
+./bin/agent-history spool-status
+./bin/agent-history failed-list
+./bin/agent-history failed-purge --older-than-days 14
+```
+
+`worker-drain` は常駐させたくない場合に便利です。cron などから定期実行すれば、常駐なしでも spool を回収できます。
+
+#### spool の機密性と順序
+
+spool は DB 本体と同じ機密度の情報を含みます（サニタイズは worker 側で行われるため、spool 上の payload は未サニタイズです）。ディレクトリは 0700、ファイルは 0600 で作成されます。worker が動いていれば滞留時間は 1 秒未満です。
+
+順序について保証するのは「**同一セッション内で `sequence_no` が spool ファイル名（hook が stdin を読み終えた時刻）の昇順になる**」ことだけです。Hook は Claude Code から並行に起動されうるため、これは「イベントが論理的に発生した順」とは限りません。複数セッション間の相対順序や、NTP 調整で壁時計が巻き戻った場合の単調性は保証しません。
+
+#### クラッシュ時の挙動
+
+spool ファイルは `tmp/` に書いてから `os.replace` で `pending/` へ原子的に移動するため、書きかけのファイルが読まれることはありません。worker はコミット成功後にファイルを削除するので、その間にクラッシュしてもファイルは `pending/` に残り、次回再取り込みされます。重複は既存の `UNIQUE(session_id, dedup_key)` インデックスと `ON CONFLICT DO NOTHING` が吸収します。
+
 ### 対応イベント
 
 ローカルで確認した Claude Code は `2.1.220` です。同バージョンのバイナリが持つ Hook イベント定義（31 種）と照合済みで、アダプターはその全てを処理します。
@@ -184,16 +253,37 @@ Claude Code の stdin JSON を `bin/agent-history-claude-hook` で受け取り�
 
 `WorktreeCreate` だけは受動的な記録 Hook として設定していません。Claude Code の公式仕様では、この Hook が成功すると作成した worktree のパスを stdout に返す必要があり、記録専用アダプターが登録されると標準の worktree 作成を置き換えてしまうためです。アダプター自体は入力を受けた場合の変換を実装しています。`FileChanged` は matcher を取らないイベントなので、matcher なしで登録します。
 
+### イベントプリセット
+
+全 30 イベントを既定で登録すると、高頻度イベントが spool を圧迫します。そのため既定は `balanced` です。
+
+| preset | イベント数 | 内容 | 想定頻度 |
+|---|---|---|---|
+| `minimal` | 4 | `SessionStart` `SessionEnd` `UserPromptSubmit` `Stop` | 数件/ターン |
+| **`balanced`（既定）** | 24 | 高頻度イベント以外の全て | 十数件/ターン |
+| `full` | 30 | 全て。下記の高頻度イベントを含む | 数百〜数千件/ターン |
+
+`full` のみに含まれる高頻度イベント: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`, `FileChanged`, `MessageDisplay`
+
+`full` は明示的な opt-in です。回転ディスクを検出した場合、インストール時に警告を表示します。
+
+各プリセットの設定例は [config/claude-hooks.minimal.json](config/claude-hooks.minimal.json) / [balanced](config/claude-hooks.balanced.json) / [full](config/claude-hooks.full.json) にあります。
+
+> **注意:** `balanced` には `PreToolUse` / `PostToolUse` が含まれないため、既定構成ではツール実行履歴が記録されません。ツール履歴が必要な場合は `--preset full` を使ってください。
+
 ### インストールとアンインストール
 
 デフォルトはドライランです。ユーザー設定 `~/.claude/settings.json`（`CLAUDE_CONFIG_DIR` があればその配下）を読み取り、変更予定だけを表示します。
 
 ```bash
-./scripts/install-claude-hooks
+./scripts/install-claude-hooks                        # balanced のドライラン
 ./scripts/install-claude-hooks --apply
+./scripts/install-claude-hooks --preset full --apply
 ./scripts/uninstall-claude-hooks
 ./scripts/uninstall-claude-hooks --apply
 ```
+
+登録されるコマンドにはイベント名が引数として埋め込まれます（`... /bin/agent-history-claude-hook SessionStart`）。Hook は `json` を import できないため payload から `hook_event_name` を読めず、argv から受け取ります。worker が payload の値と突き合わせて検証します。
 
 `--apply` を付けたときだけ設定を変更します。既存の `hooks`、`permissions`、その他の設定は保持し、同じアダプターを二重登録しません。変更前に `settings.json.bak-<UTC timestamp>` を作成し、JSONを検証してから同じディレクトリ内の一時ファイルを原子的に置換します。`--scope project` または `--scope local` と `--settings-path` も利用できます。不正JSONやシンボリックリンクの設定ファイルは変更しません。
 

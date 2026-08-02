@@ -16,6 +16,7 @@ from .commands import init_db
 from .commands import search as search_commands
 from .commands import session as session_commands
 from .commands import target as target_commands
+from .commands import worker as worker_commands
 from .db import get_db_path
 
 
@@ -125,6 +126,28 @@ def build_parser() -> argparse.ArgumentParser:
         "claude-sessions", help="list sessions captured from Claude Code"
     )
     claude_sessions.add_argument("--limit", type=int, default=20)
+
+    worker_start = subparsers.add_parser(
+        "worker-start", help="run the spool worker (foreground unless --detach)"
+    )
+    worker_start.add_argument("--detach", action="store_true")
+    worker_start.add_argument("--batch-size", type=int, default=50)
+
+    subparsers.add_parser("worker-stop", help="stop the running spool worker")
+    subparsers.add_parser("worker-status", help="show worker and spool state")
+
+    worker_drain = subparsers.add_parser(
+        "worker-drain", help="ingest everything currently spooled, then exit"
+    )
+    worker_drain.add_argument("--batch-size", type=int, default=50)
+
+    subparsers.add_parser("spool-status", help="show spool directory counts")
+
+    failed_list = subparsers.add_parser("failed-list", help="list quarantined events")
+    failed_list.add_argument("--limit", type=int, default=20)
+
+    failed_purge = subparsers.add_parser("failed-purge", help="delete quarantined events")
+    failed_purge.add_argument("--older-than-days", type=float, default=0.0)
 
     return parser
 
@@ -238,6 +261,24 @@ def _run(args: argparse.Namespace) -> str:
         return claude_hook_commands.status(db_path=db_path, scope=args.scope)
     if args.command == "claude-sessions":
         return claude_hook_commands.claude_sessions(db_path, limit=args.limit)
+    if args.command == "worker-start":
+        return worker_commands.worker_start(
+            db_path=db_path, detach=args.detach, batch_size=args.batch_size
+        )
+    if args.command == "worker-stop":
+        return worker_commands.worker_stop(db_path=db_path)
+    if args.command == "worker-status":
+        return worker_commands.worker_status(db_path=db_path)
+    if args.command == "worker-drain":
+        return worker_commands.worker_drain(db_path=db_path, batch_size=args.batch_size)
+    if args.command == "spool-status":
+        return worker_commands.spool_status(db_path=db_path)
+    if args.command == "failed-list":
+        return worker_commands.failed_list(db_path=db_path, limit=args.limit)
+    if args.command == "failed-purge":
+        return worker_commands.failed_purge(
+            db_path=db_path, older_than_days=args.older_than_days
+        )
     raise CommandError("a command is required; use --help for usage")
 
 

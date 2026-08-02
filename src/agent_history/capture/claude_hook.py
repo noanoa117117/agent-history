@@ -155,6 +155,24 @@ class HookResult:
     dead_letter_path: Optional[Path] = None
 
 
+@dataclass(frozen=True)
+class PreparedEvent:
+    """One hook payload, sanitized and projected, ready to be inserted.
+
+    Produced by `prepare_event()` and consumed both by the direct recorder here
+    and by the spool worker, so the two paths cannot drift apart.
+    """
+
+    event_name: str
+    payload: Dict[str, Any]
+    content: str
+    content_json: str
+    sensitivity: str
+    truncated: bool
+    source_event_id: Optional[str]
+    dedup_key: str
+
+
 def _positive_env(name: str, default: int, *, minimum: int = 256) -> int:
     try:
         value = int(os.environ.get(name, str(default)))
@@ -656,6 +674,44 @@ def _dedup_key(event_name: str, payload: Mapping[str, Any], sanitized_payload: M
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def prepare_event(
+    event_name: str,
+    payload: Mapping[str, Any],
+    config: HookConfig,
+    input_size: int,
+) -> PreparedEvent:
+    """Sanitize, truncate, and project one hook payload into event fields."""
+
+    limited_payload, content_json, sanitized_changed, truncated = _prepare_payload(
+        payload, event_name, config, input_size
+    )
+    content, content_truncated = _content(
+        event_name, limited_payload, config.max_content_bytes
+    )
+    truncated = truncated or content_truncated
+    if content_truncated:
+        # Keep the JSON flag truthful if the human-readable projection was
+        # shorter than the structured payload.
+        limited_payload["truncated"] = True
+        content_json, _ = _serialize_payload(
+            limited_payload,
+            event_name=event_name,
+            original_size=input_size,
+            truncated=True,
+            maximum=config.max_json_bytes,
+        )
+    return PreparedEvent(
+        event_name=event_name,
+        payload=limited_payload,
+        content=content,
+        content_json=content_json,
+        sensitivity="sanitized" if sanitized_changed else "clean",
+        truncated=truncated,
+        source_event_id=_stable_source_id(event_name, payload),
+        dedup_key=_dedup_key(event_name, payload, limited_payload),
+    )
+
+
 def _record_event(
     config: HookConfig,
     *,
@@ -898,37 +954,18 @@ def process_hook(
         return HookResult(False, error=reason, dead_letter_path=path)
 
     try:
-        limited_payload, content_json, sanitized_changed, truncated = _prepare_payload(
-            payload, actual_event, config, input_size
-        )
-        content, content_truncated = _content(actual_event, limited_payload, config.max_content_bytes)
-        truncated = truncated or content_truncated
-        if content_truncated:
-            # Keep the JSON flag truthful if the human-readable projection was
-            # shorter than the structured payload.
-            limited_payload["truncated"] = True
-            content_json, _ = _serialize_payload(
-                limited_payload,
-                event_name=actual_event,
-                original_size=input_size,
-                truncated=True,
-                maximum=config.max_json_bytes,
-            )
-        dedup_key = _dedup_key(actual_event, payload, limited_payload)
-        source_event_id = _stable_source_id(actual_event, payload)
-        occurred_at = utc_now_iso()
-        sensitivity = "sanitized" if sanitized_changed else "clean"
+        prepared = prepare_event(actual_event, payload, config, input_size)
         event_id, duplicate = _record_event(
             config,
-            event_name=actual_event,
-            payload=limited_payload,
-            content=content,
-            content_json=content_json,
-            sensitivity=sensitivity,
-            truncated=truncated,
-            source_event_id=source_event_id,
-            dedup_key=dedup_key,
-            occurred_at=occurred_at,
+            event_name=prepared.event_name,
+            payload=prepared.payload,
+            content=prepared.content,
+            content_json=prepared.content_json,
+            sensitivity=prepared.sensitivity,
+            truncated=prepared.truncated,
+            source_event_id=prepared.source_event_id,
+            dedup_key=prepared.dedup_key,
+            occurred_at=utc_now_iso(),
         )
         return HookResult(True, event_id=event_id, duplicate=duplicate)
     except Exception as exc:

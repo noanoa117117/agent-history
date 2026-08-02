@@ -66,6 +66,17 @@
         "matcher": "*"
       }
     ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$AGENT_HISTORY_ROOT/bin/agent-history-claude-hook PreToolUse"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
     "PermissionRequest": [
       {
         "hooks": [
@@ -75,6 +86,38 @@
           }
         ],
         "matcher": "*"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$AGENT_HISTORY_ROOT/bin/agent-history-claude-hook PostToolUse"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$AGENT_HISTORY_ROOT/bin/agent-history-claude-hook PostToolUseFailure"
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$AGENT_HISTORY_ROOT/bin/agent-history-claude-hook PostToolBatch"
+          }
+        ]
       }
     ],
     "PermissionDenied": [
@@ -192,6 +235,16 @@
         ]
       }
     ],
+    "FileChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$AGENT_HISTORY_ROOT/bin/agent-history-claude-hook FileChanged"
+          }
+        ]
+      }
+    ],
     "DirectoryAdded": [
       {
         "hooks": [
@@ -255,6 +308,16 @@
           }
         ],
         "matcher": "*"
+      }
+    ],
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$AGENT_HISTORY_ROOT/bin/agent-history-claude-hook MessageDisplay"
+          }
+        ]
       }
     ]
   }

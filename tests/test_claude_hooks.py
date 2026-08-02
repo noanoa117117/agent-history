@@ -17,6 +17,7 @@ from agent_history.capture.claude_hook import (
 )
 from agent_history.commands import CommandError
 from agent_history.commands.claude_hook import install, uninstall
+from agent_history.presets import BALANCED_EVENTS
 from agent_history.commands.search import search_events
 from agent_history.db import connect_db, init_database
 
@@ -480,12 +481,15 @@ class ClaudeHookTests(unittest.TestCase):
         self.assertNotIn("WorktreeCreate", INSTALLABLE_EVENTS)
 
     def test_example_config_matches_what_the_installer_writes(self):
+        # The example ships the default `balanced` preset, not every event:
+        # registering the high-frequency events by default is what made the
+        # first rollout unusable. See tests/test_worker.py for preset coverage.
         example = json.loads(
             (Path(__file__).resolve().parents[1] / "config" / "claude-hooks.example.json")
             .read_text(encoding="utf-8")
         )
         hooks = example["hooks"]
-        self.assertEqual(set(hooks), set(INSTALLABLE_EVENTS))
+        self.assertEqual(set(hooks), set(BALANCED_EVENTS))
         for event_name, groups in hooks.items():
             with self.subTest(event=event_name):
                 self.assertEqual("matcher" in groups[0], event_name in MATCHER_EVENTS)

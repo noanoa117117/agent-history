@@ -11,9 +11,12 @@ data/*.db-wal
 !data/.gitkeep
 data/dead-letter/*
 data/logs/*
+# Spool files hold raw, not-yet-sanitized hook payloads: never commit them.
+data/spool/
 
 .env
 .env.*
+!.env.example
 *.key
 *.pem
 *.p12

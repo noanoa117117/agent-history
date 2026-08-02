@@ -19,6 +19,13 @@ from ..capture.claude_hook import (
     hook_config,
 )
 from ..db import PathLike, connect_db, get_db_path, REPOSITORY_ROOT
+from ..presets import (
+    DEFAULT_PRESET,
+    HIGH_FREQUENCY_EVENTS,
+    PRESET_DESCRIPTIONS,
+    is_rotational_disk,
+    preset_events,
+)
 from . import CommandError
 from .session import list_sessions, render_session_list
 
@@ -42,13 +49,21 @@ def settings_path(scope: str = "user", *, cwd: Optional[PathLike] = None) -> Pat
     raise CommandError(f"unsupported scope: {scope}")
 
 
-def _hook_command() -> str:
-    return str(adapter_path())
+def _hook_command(event_name: Optional[str] = None) -> str:
+    """Build the registered command.
+
+    The event name is baked into each command because the hook cannot afford to
+    import `json` to read `hook_event_name` out of the payload; argv is free.
+    The worker still cross-checks the two.
+    """
+
+    adapter = str(adapter_path())
+    return f"{adapter} {event_name}" if event_name else adapter
 
 
 def _new_hook_group(event_name: str) -> Dict[str, Any]:
     group: Dict[str, Any] = {
-        "hooks": [{"type": "command", "command": _hook_command()}]
+        "hooks": [{"type": "command", "command": _hook_command(event_name)}]
     }
     if event_name in MATCHER_EVENTS:
         group["matcher"] = "*"
@@ -111,14 +126,16 @@ def _copy_without_agent_hooks(data: Dict[str, Any]) -> Tuple[Dict[str, Any], int
     return result, removed
 
 
-def _merge_agent_hooks(data: Dict[str, Any]) -> Tuple[Dict[str, Any], int, List[str]]:
+def _merge_agent_hooks(
+    data: Dict[str, Any], events: Iterable[str] = INSTALLABLE_EVENTS
+) -> Tuple[Dict[str, Any], int, List[str]]:
     result = json.loads(json.dumps(data, ensure_ascii=False))
     hooks = result.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise CommandError("Claude settings hooks must be an object")
     added = 0
     already = []
-    for event_name in INSTALLABLE_EVENTS:
+    for event_name in events:
         groups = hooks.setdefault(event_name, [])
         if not isinstance(groups, list):
             raise CommandError(f"Claude settings hooks.{event_name} must be an array")
@@ -169,20 +186,37 @@ def install(
     apply: bool = False,
     scope: str = "user",
     path: Optional[PathLike] = None,
+    preset: str = DEFAULT_PRESET,
 ) -> str:
+    try:
+        events = preset_events(preset)
+    except ValueError as exc:
+        raise CommandError(str(exc)) from exc
     target = Path(path).expanduser() if path else settings_path(scope)
     existing, existed = _load_settings(target)
-    merged, added, already = _merge_agent_hooks(existing)
+    merged, added, already = _merge_agent_hooks(existing, events)
     lines = [
         "Claude Code hook installation (dry-run)" if not apply else "Claude Code hook installation",
         f"Settings: {target}",
         f"Adapter: {_hook_command()}",
         f"Scope: {scope}",
+        f"Preset: {preset} ({PRESET_DESCRIPTIONS[preset]})",
         f"Existing agent-history events: {len(already)}",
         f"Events to add: {added}",
-        "Installed events: " + ", ".join(INSTALLABLE_EVENTS),
+        "Installed events: " + ", ".join(events),
         "Not installed by passive adapter: WorktreeCreate (hook must create and print a worktree path)",
     ]
+    if preset == "full":
+        lines.append(
+            "Warning: 'full' registers high-frequency events ("
+            + ", ".join(HIGH_FREQUENCY_EVENTS)
+            + ")."
+        )
+        if is_rotational_disk():
+            lines.append(
+                "Warning: a rotational disk was detected. 'full' is not recommended here; "
+                "prefer --preset balanced."
+            )
     if not apply:
         lines.append("No files changed. Use --apply to write the merged settings.")
         return "\n".join(lines)
@@ -327,6 +361,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     install_parser.add_argument("--apply", action="store_true")
     install_parser.add_argument("--scope", choices=("user", "project", "local"), default="user")
     install_parser.add_argument("--settings-path")
+    install_parser.add_argument(
+        "--preset", choices=sorted(PRESET_DESCRIPTIONS), default=DEFAULT_PRESET
+    )
     uninstall_parser = subparsers.add_parser("uninstall")
     uninstall_parser.add_argument("--apply", action="store_true")
     uninstall_parser.add_argument("--scope", choices=("user", "project", "local"), default="user")
@@ -339,7 +376,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     sessions_parser.add_argument("--limit", type=int, default=20)
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.command == "install":
-        print(install(apply=args.apply, scope=args.scope, path=args.settings_path))
+        print(
+            install(
+                apply=args.apply,
+                scope=args.scope,
+                path=args.settings_path,
+                preset=args.preset,
+            )
+        )
     elif args.command == "uninstall":
         print(uninstall(apply=args.apply, scope=args.scope, path=args.settings_path))
     elif args.command == "status":
