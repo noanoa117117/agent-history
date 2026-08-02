@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+    echo "usage: run-timeboxed SECONDS COMMAND [ARGS...]" >&2
+    exit 64
+}
+
+[ "$#" -ge 2 ] || usage
+limit="$1"
+shift
+case "$limit" in
+    ''|*[!0-9]*) usage ;;
+esac
+
+terminate_group() {
+    local signal="$1"
+    kill "-${signal}" -- "-${child}" 2>/dev/null || true
+}
+
+child=""
+on_signal() {
+    if [ -n "$child" ]; then
+        terminate_group TERM
+        sleep 1 || true
+        terminate_group KILL
+        wait "$child" 2>/dev/null || true
+    fi
+    exit 130
+}
+trap on_signal INT TERM
+
+setsid -- "$@" &
+child="$!"
+started_at="$(date +%s)"
+
+while kill -0 "$child" 2>/dev/null; do
+    now="$(date +%s)"
+    if [ "$limit" -gt 0 ] && [ $((now - started_at)) -ge "$limit" ]; then
+        echo "timeboxed command exceeded ${limit}s; terminating its process group." >&2
+        terminate_group TERM
+        for _ in 1 2 3 4 5; do
+            sleep 1 || true
+            if ! kill -0 -- "-${child}" 2>/dev/null; then
+                break
+            fi
+        done
+        terminate_group KILL
+        wait "$child" 2>/dev/null || true
+        exit 124
+    fi
+    sleep 1
+done
+
+set +e
+wait "$child"
+status="$?"
+set -e
+
+# Reap background descendants that stayed in the command's process group.
+terminate_group TERM
+sleep 1 || true
+terminate_group KILL
+trap - INT TERM
+exit "$status"

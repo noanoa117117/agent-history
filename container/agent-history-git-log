@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+repo="${AGENT_HISTORY_REPO_PATH:-/workspace/agent-history}"
+
+if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "agent-history workspace is not a Git repository: $repo" >&2
+    exit 1
+fi
+
+git -C "$repo" log --oneline --decorate --graph -20

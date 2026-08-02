@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+repo="${AGENT_HISTORY_REPO_PATH:-/workspace/agent-history}"
+
+if [ ! -d "$repo/.git" ]; then
+    if [ -n "$(find "$repo" -mindepth 1 -maxdepth 1 ! -name data -print -quit)" ]; then
+        echo "dev-purge stopped: workspace is non-empty but is not a Git repository." >&2
+        exit 2
+    fi
+    echo "workspace is empty; no Git data to protect."
+    exit 0
+fi
+
+status="$(git -C "$repo" status --porcelain --untracked-files=all)"
+if [ -n "$status" ]; then
+    echo "dev-purge stopped: uncommitted or untracked workspace data exists." >&2
+    printf '%s\n' "$status"
+    exit 2
+fi
+
+if ! git -C "$repo" symbolic-ref --quiet --short HEAD >/dev/null; then
+    echo "dev-purge stopped: detached HEAD makes safety checks ambiguous." >&2
+    exit 2
+fi
+
+upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+if [ -z "$upstream" ]; then
+    echo "dev-purge stopped: no upstream exists, so unpushed commits cannot be verified." >&2
+    exit 2
+fi
+
+ahead="$(git -C "$repo" rev-list --count "$upstream"..HEAD)"
+if [ "$ahead" -gt 0 ]; then
+    echo "dev-purge stopped: $ahead unpushed commit(s) exist on $upstream." >&2
+    git -C "$repo" log --oneline --decorate "$upstream..HEAD"
+    exit 2
+fi
+
+echo "purge safety check passed: no uncommitted changes, untracked files, or unpushed commits."

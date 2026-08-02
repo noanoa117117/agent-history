@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+repo="${AGENT_HISTORY_REPO_PATH:-/workspace/agent-history}"
+export GIT_TERMINAL_PROMPT=0
+
+if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "dev-push stopped: workspace is not a Git repository." >&2
+    exit 2
+fi
+
+branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD || true)"
+if [ -z "$branch" ]; then
+    echo "dev-push stopped: detached HEAD is not pushable by this helper." >&2
+    exit 2
+fi
+
+if [ -n "$(git -C "$repo" ls-files --unmerged)" ]; then
+    echo "dev-push stopped: unresolved merge conflicts exist." >&2
+    git -C "$repo" status --short
+    exit 2
+fi
+
+status="$(git -C "$repo" status --porcelain --untracked-files=all)"
+if [ -n "$status" ]; then
+    echo "dev-push stopped: commit or remove all working-tree changes first." >&2
+    printf '%s\n' "$status"
+    exit 2
+fi
+
+upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+if [ -z "$upstream" ]; then
+    echo "dev-push stopped: current branch has no upstream." >&2
+    exit 2
+fi
+
+remote="${upstream%%/*}"
+remote_branch="${upstream#*/}"
+remote_url="$(git -C "$repo" remote get-url "$remote" 2>/dev/null || true)"
+safe_remote_url="$(printf '%s' "$remote_url" | sed -E 's#(https?://)[^/@]+@#\1#; s#(ssh://)[^/@]+@#\1#')"
+
+if [ -z "$remote_url" ] || [ "$remote_branch" = "$upstream" ]; then
+    echo "dev-push stopped: upstream remote could not be resolved." >&2
+    exit 2
+fi
+
+ahead="$(git -C "$repo" rev-list --count "$upstream"..HEAD)"
+behind="$(git -C "$repo" rev-list --count HEAD.."$upstream")"
+if [ "$ahead" -eq 0 ]; then
+    echo "dev-push stopped: no local commits are ahead of $upstream." >&2
+    exit 2
+fi
+
+echo "Push target:"
+echo "  branch: $branch"
+echo "  remote: $remote"
+echo "  remote URL: $safe_remote_url"
+echo "  upstream: $upstream"
+echo "  ahead/behind: $ahead/$behind"
+echo
+echo "Commits to push:"
+git -C "$repo" log --oneline --decorate "$upstream..HEAD"
+echo
+echo "Committed diff to push:"
+git -C "$repo" diff --stat "$upstream" HEAD
+echo
+echo "Running a normal push; force push is intentionally unavailable."
+git -C "$repo" push "$remote" "$branch"

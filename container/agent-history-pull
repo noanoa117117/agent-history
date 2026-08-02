@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+repo="${AGENT_HISTORY_REPO_PATH:-/workspace/agent-history}"
+url="${AGENT_HISTORY_REPO_URL:-https://github.com/noanoa117117/agent-history.git}"
+branch="${AGENT_HISTORY_BRANCH:-}"
+
+export GIT_TERMINAL_PROMPT=0
+mkdir -p "$repo"
+
+ensure_local_cli_state_excluded() {
+    local exclude="$repo/.git/info/exclude"
+    mkdir -p "$(dirname "$exclude")"
+    touch "$exclude"
+    for pattern in ".claude/" ".codex/"; do
+        if ! grep -Fqx -- "$pattern" "$exclude"; then
+            printf '%s\n' "$pattern" >> "$exclude"
+        fi
+    done
+}
+
+if [ -d "$repo/.git" ]; then
+    ensure_local_cli_state_excluded
+    if [ -n "$(git -C "$repo" status --porcelain --untracked-files=all)" ]; then
+        echo "dev-pull stopped: workspace has uncommitted or untracked changes." >&2
+        git -C "$repo" status --short
+        exit 2
+    fi
+
+    if ! git -C "$repo" symbolic-ref --quiet --short HEAD >/dev/null; then
+        echo "dev-pull stopped: workspace is on a detached HEAD." >&2
+        exit 2
+    fi
+
+    if ! git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+        echo "dev-pull stopped: current branch has no upstream." >&2
+        exit 2
+    fi
+
+    echo "Pulling the current branch with fast-forward-only policy."
+    git -C "$repo" pull --ff-only
+    exit 0
+fi
+
+if [ -n "$(find "$repo" -mindepth 1 -maxdepth 1 ! -name data -print -quit)" ]; then
+    echo "dev-pull stopped: workspace is non-empty but is not a Git repository." >&2
+    exit 2
+fi
+
+echo "Cloning GitHub source of truth into $repo."
+clone_dir="$(mktemp -d /tmp/agent-history-clone.XXXXXX)"
+cleanup() {
+    rm -rf -- "$clone_dir"
+}
+trap cleanup EXIT
+
+if [ -n "$branch" ]; then
+    git clone --single-branch --branch "$branch" "$url" "$clone_dir"
+else
+    git clone --single-branch "$url" "$clone_dir"
+fi
+
+cp -a "$clone_dir"/. "$repo"/
+ensure_local_cli_state_excluded

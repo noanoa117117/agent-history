@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+repo="${AGENT_HISTORY_REPO_PATH:-/workspace/agent-history}"
+cd "$repo"
+
+if [ ! -f pyproject.toml ] || [ ! -d tests ]; then
+    echo "test stopped: the GitHub workspace is not the expected agent-history repository." >&2
+    exit 2
+fi
+
+exec run-timeboxed 300 env PYTHONPATH=src python3 -m unittest discover -s tests -v

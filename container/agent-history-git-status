@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+repo="${AGENT_HISTORY_REPO_PATH:-/workspace/agent-history}"
+
+if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "agent-history workspace is not a Git repository: $repo" >&2
+    exit 1
+fi
+
+branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD || true)"
+if [ -z "$branch" ]; then
+    branch="(detached HEAD)"
+fi
+
+upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+if [ -z "$upstream" ]; then
+    upstream="(none)"
+fi
+
+echo "repository: $repo"
+echo "branch: $branch"
+echo "upstream: $upstream"
+echo
+git -C "$repo" status --short --branch

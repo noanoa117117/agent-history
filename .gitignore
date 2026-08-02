@@ -17,6 +17,10 @@ data/spool/
 .env
 .env.*
 !.env.example
+# Agent CLI state directories: these hold auth.json and session history.
+# Already excluded from the image via .dockerignore; keep them out of Git too.
+.claude/
+.codex/
 *.key
 *.pem
 *.p12

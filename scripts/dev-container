@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+export DEV_UID="${DEV_UID:-$(id -u)}"
+export DEV_GID="${DEV_GID:-$(id -g)}"
+
+compose() {
+    docker compose -f "$root/compose.yaml" "$@"
+}
+
+usage() {
+    cat >&2 <<'EOF'
+usage: scripts/dev-container COMMAND
+
+commands:
+  build       Build the development image
+  start       Start the bounded development container
+  host-status Show the thin host checkout status
+  host-pull   Fast-forward-only update of the thin host checkout
+  shell       Open a shell in the running container
+  claude      Run Claude Code in the running container
+  codex       Run Codex CLI in the running container
+  codex-login Authenticate Codex CLI (browser/device login)
+  codex-status Show Codex CLI login status
+  gh-login    Authenticate GitHub CLI using HTTPS device/web login
+  gh-status   Show GitHub CLI authentication status
+  git-status  Show branch, upstream, and working-tree status
+  git-log     Show recent commits
+  pull        Clone initially or fast-forward-only pull an existing workspace
+  push        Validate and push the current upstream branch without force
+  test        Run the existing test suite with a timeout
+  logs        Show bounded Docker logs
+  status      Show Compose container status
+  stop        Stop the container and preserve volumes
+  clean       Remove the container/network and preserve volumes
+  purge       Refuse unsafe deletion, then explicitly remove all project volumes
+EOF
+    exit 64
+}
+
+[ "$#" -ge 1 ] || usage
+command="$1"
+shift
+
+case "$command" in
+    build)
+        compose build "$@"
+        ;;
+    start)
+        compose up -d "$@"
+        ;;
+    host-status)
+        if ! git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "host checkout is not a Git repository: $root" >&2
+            exit 1
+        fi
+        echo "host checkout: $root"
+        git -C "$root" status --short --branch
+        ;;
+    host-pull)
+        if ! git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "host checkout is not a Git repository: $root" >&2
+            exit 1
+        fi
+        if [ -n "$(git -C "$root" status --porcelain --untracked-files=all)" ]; then
+            echo "dev-host-pull stopped: host checkout has uncommitted or untracked changes." >&2
+            git -C "$root" status --short
+            exit 2
+        fi
+        if ! git -C "$root" symbolic-ref --quiet --short HEAD >/dev/null; then
+            echo "dev-host-pull stopped: host checkout is on a detached HEAD." >&2
+            exit 2
+        fi
+        if ! git -C "$root" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+            echo "dev-host-pull stopped: host branch has no upstream." >&2
+            exit 2
+        fi
+        upstream="$(git -C "$root" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')"
+        ahead="$(git -C "$root" rev-list --count "$upstream"..HEAD)"
+        if [ "$ahead" -gt 0 ]; then
+            echo "dev-host-pull stopped: host checkout has $ahead unpushed commit(s)." >&2
+            git -C "$root" log --oneline --decorate "$upstream..HEAD"
+            exit 2
+        fi
+        git -C "$root" pull --ff-only
+        ;;
+    shell)
+        compose exec agent-history-dev bash "$@"
+        ;;
+    claude)
+        compose exec -it agent-history-dev claude "$@"
+        ;;
+    codex)
+        compose exec -it agent-history-dev codex "$@"
+        ;;
+    codex-login)
+        compose exec -it agent-history-dev codex login "$@"
+        ;;
+    codex-status)
+        compose exec agent-history-dev codex login status "$@"
+        ;;
+    gh-login)
+        compose exec -it agent-history-dev gh auth login \
+            --hostname github.com \
+            --git-protocol https \
+            --web
+        ;;
+    gh-status)
+        compose exec agent-history-dev gh auth status "$@"
+        ;;
+    git-status)
+        compose run --rm --no-deps agent-history-dev /usr/local/bin/agent-history-git-status "$@"
+        ;;
+    git-log)
+        compose run --rm --no-deps agent-history-dev /usr/local/bin/agent-history-git-log "$@"
+        ;;
+    pull)
+        compose run --rm --no-deps agent-history-dev /usr/local/bin/agent-history-pull "$@"
+        ;;
+    push)
+        compose run --rm --no-deps agent-history-dev /usr/local/bin/agent-history-push "$@"
+        ;;
+    test)
+        compose run --rm --no-deps agent-history-dev /usr/local/bin/agent-history-test "$@"
+        ;;
+    logs)
+        compose logs --timestamps --tail="${LOG_TAIL:-200}" agent-history-dev "$@"
+        ;;
+    status)
+        compose ps "$@"
+        ;;
+    stop)
+        compose stop "$@"
+        ;;
+    clean)
+        compose down --remove-orphans "$@"
+        ;;
+    purge)
+        compose run --rm --no-deps agent-history-dev /usr/local/bin/agent-history-purge-check
+        echo
+        echo "WARNING: this removes agent-history-workspace, agent-history-claude-home,"
+        echo "         agent-history-github-auth, and agent-history-data."
+        echo "         Claude/GitHub authentication, conversation history, Git history,"
+        echo "         SQLite data, logs, and test artifacts in those volumes will be deleted."
+        confirmation="${PURGE_CONFIRM:-}"
+        if [ -z "$confirmation" ]; then
+            read -r -p "Type PURGE to continue: " confirmation
+        fi
+        if [ "$confirmation" != "PURGE" ]; then
+            echo "dev-purge cancelled; volumes were preserved."
+            exit 1
+        fi
+        compose down --volumes --remove-orphans "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac

@@ -1,0 +1,72 @@
+name: agent-history
+
+services:
+  agent-history-dev:
+    image: agent-history-dev:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DEV_UID: "${DEV_UID:-1000}"
+        DEV_GID: "${DEV_GID:-1000}"
+        CLAUDE_CODE_VERSION: "${CLAUDE_CODE_VERSION:-2.1.220}"
+        NODE_VERSION: "${NODE_VERSION:-24.18.1}"
+        CODEX_VERSION: "${CODEX_VERSION:-0.146.0}"
+    container_name: agent-history-dev
+    user: "${DEV_UID:-1000}:${DEV_GID:-1000}"
+    working_dir: /workspace/agent-history
+    command: ["sleep", "infinity"]
+    init: true
+    restart: "no"
+    mem_limit: "3g"
+    mem_reservation: "2g"
+    memswap_limit: "4g"
+    cpus: "2.0"
+    pids_limit: 512
+    privileged: false
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    shm_size: "64m"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m
+    environment:
+      HOME: /home/amida
+      CLAUDE_CONFIG_DIR: /home/amida/.claude
+      CODEX_HOME: /home/amida/.codex
+      XDG_CONFIG_HOME: /home/amida/.config
+      GH_CONFIG_DIR: /home/amida/.config/gh
+      GIT_CONFIG_GLOBAL: /home/amida/.config/gh/gitconfig
+      PYTHONPATH: /workspace/agent-history/src
+      AGENT_HISTORY_DB: /workspace/agent-history/data/agent_history.db
+      AGENT_HISTORY_REPO_URL: "${AGENT_HISTORY_REPO_URL:-https://github.com/noanoa117117/agent-history.git}"
+      AGENT_HISTORY_BRANCH: "${AGENT_HISTORY_BRANCH:-perf/claude-hook-overhead}"
+      AGENT_HISTORY_REPO_PATH: /workspace/agent-history
+    volumes:
+      - agent-history-workspace:/workspace/agent-history
+      - agent-history-claude-home:/home/amida/.claude
+      - agent-history-codex-home:/home/amida/.codex
+      - agent-history-github-auth:/home/amida/.config/gh
+      - agent-history-data:/workspace/agent-history/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  agent-history-workspace:
+    name: agent-history-workspace
+  agent-history-claude-home:
+    name: agent-history-claude-home
+  agent-history-codex-home:
+    name: agent-history-codex-home
+  agent-history-github-auth:
+    name: agent-history-github-auth
+  agent-history-data:
+    name: agent-history-data
+
+networks:
+  default:
+    name: agent-history_default

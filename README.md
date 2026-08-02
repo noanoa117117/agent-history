@@ -22,9 +22,20 @@ AI 内部の非表示な思考過程は保存対象にしません。保存対�
 
 ## セットアップ
 
+Docker開発環境はこのagent-history repository内で管理します。ホスト側checkoutはDocker環境の起動・更新用、コンテナ側workspaceはClaude Code、Codex CLI、テスト、コード編集、commit、push用です。両方で同じコードを並行編集しません。詳細は[Docker隔離開発環境](docs/docker-development.md)を参照してください。
+
 追加パッケージは不要です。Ubuntu の Python 3.9 以上を想定しています。SQLite が FTS5 を有効にしている必要があります。
 
-ホストのメモリを保護しながら開発・テスト・Claude Code・GitHub操作を行うDocker構成は、[Docker隔離開発環境](docs/docker-development.md)を参照してください。Git作業ツリー、Claude設定、GitHub認証、SQLiteデータは専用named volumeへ分離します。
+ホストのメモリを保護しながら開発・テスト・Claude Code・Codex CLI・GitHub操作を行うDocker構成は、[Docker隔離開発環境](docs/docker-development.md)を参照してください。Git作業ツリー、Claude設定、Codex設定、GitHub認証、SQLiteデータは専用named volumeへ分離します。
+
+Claude Code と Codex CLI はどちらも「CLI本体はimage、認証情報はvolume」に分離しています。イメージをbuildした時点で両方が使える状態になり、コンテナ内で手動の `npm install` は不要です。
+
+    make dev-build
+    make dev-start
+    make dev-claude          # Claude Code
+    make dev-codex           # Codex CLI
+    make dev-codex-login     # 初回のみ
+    make dev-codex-status
 
 ```bash
 cd /home/amida/projects/agent-history
