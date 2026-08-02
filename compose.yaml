@@ -41,7 +41,7 @@ services:
       PYTHONPATH: /workspace/agent-history/src
       AGENT_HISTORY_DB: /workspace/agent-history/data/agent_history.db
       AGENT_HISTORY_REPO_URL: "${AGENT_HISTORY_REPO_URL:-https://github.com/noanoa117117/agent-history.git}"
-      AGENT_HISTORY_BRANCH: "${AGENT_HISTORY_BRANCH:-perf/claude-hook-overhead}"
+      AGENT_HISTORY_BRANCH: "${AGENT_HISTORY_BRANCH:-main}"
       AGENT_HISTORY_REPO_PATH: /workspace/agent-history
     volumes:
       - agent-history-workspace:/workspace/agent-history
