@@ -234,6 +234,16 @@ Claude Code ──> bin/agent-history-claude-hook ──> data/spool/pending/  (
 
 **worker を起動しないとイベントは DB に入りません**（spool には貯まり続けます）。
 
+Docker 開発環境では、worker は Compose の独立サービスとして常駐します。`make dev-start` で dev コンテナと一緒に起動するため、起動忘れが起きません。詳細は [Docker隔離開発環境](docs/docker-development.md) を参照してください。
+
+```bash
+make dev-start           # dev + worker
+make dev-worker-status
+make dev-worker-logs
+```
+
+Docker を使わない場合は次のコマンドで手動起動します。
+
 ```bash
 ./bin/agent-history worker-start            # フォアグラウンド実行
 ./bin/agent-history worker-start --detach   # バックグラウンド実行

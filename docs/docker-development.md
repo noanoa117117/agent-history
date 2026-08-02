@@ -192,6 +192,12 @@ force push用の引数や自動force設定はありません。認証失敗時�
     make dev-codex       # コンテナ内Codex CLI
     make dev-codex-login # Codexログイン
     make dev-codex-status # Codex認証状態
+    make dev-worker-start   # spool workerサービス起動
+    make dev-worker-stop    # 停止
+    make dev-worker-restart # 再起動
+    make dev-worker-status  # worker状態とspool件数
+    make dev-worker-logs    # workerログ
+    make dev-worker-drain   # 今ある分だけ取り込み
     make dev-gh-login    # GitHubデバイス/webログイン
     make dev-gh-status   # GitHub認証状態
     make dev-git-status  # branch/upstream/status
@@ -219,6 +225,93 @@ dev-purgeはworkspaceに未コミット変更、未追跡ファイル、未push 
 未コミット変更がなく、Docker操作を一時停止できる状態で、親ディレクトリへ別名cloneします。新しいcheckoutでmake dev-startを実行すると、明示されたagent-history image、container、volume、networkを再利用できます。GitHubにまだpushしていないDocker定義変更がある場合は、再clone前に失われないようcommit・pushまたはバックアップを行います。
 
 workspace volumeはホストcheckoutとは独立しているため、ホストcheckoutの再cloneだけではworkspaceのコード、Git履歴、Claude/Codex/GitHub認証、SQLiteデータは削除されません。dev-purgeを実行した場合だけnamed volumeが削除されます。
+
+## spool worker サービス
+
+hookはイベントをspoolへ置くだけで、SQLiteへ入れるのはworkerです。**workerが動いていないとDBには反映されません**（spoolには貯まり続けます）。起動忘れを避けるため、workerはComposeの独立サービスとして常駐します。
+
+    make dev-start          # agent-history-dev と agent-history-worker を一緒に起動
+
+個別操作は次のとおりです。
+
+    make dev-worker-start    # 起動
+    make dev-worker-stop     # 停止（明示停止したら自動では起き上がりません）
+    make dev-worker-restart  # 再起動
+    make dev-worker-status   # Compose状態 + spool件数
+    make dev-worker-logs     # ログ（既定で末尾200行）
+    make dev-worker-drain    # 今ある分だけ取り込んで終了
+
+### フォアグラウンド実行
+
+Composeのcommandは`worker-start`ではなく`/usr/local/bin/agent-history-worker-run`です。`worker-start --detach`はフォークして親が終了するため、コンテナのPID 1が消えて`restart: unless-stopped`が再起動ループになります。
+
+`agent-history-worker-run`は次の性質を持ちます。
+
+- daemonizeしない
+- `exec`でworker本体を起動するため、PID 1（docker-init）の直接の子になる
+- SIGTERMをworker自身が受け取る
+- 進捗をstderrへ逐次出力する（`docker compose logs`で追える）
+- SIGTERM受信時は処理中バッチを完了してから終了する。バックログ全体をdrainしないため、Dockerのgrace period内に収まる。残りは次回起動時に取り込まれ、重複はdedupインデックスが吸収する
+
+プロセスツリーは次のようになります。
+
+    PID  PPID  COMMAND
+      1     0  /sbin/docker-init -- /usr/local/bin/agent-history-worker-run
+      7     1  python3 -u -m agent_history worker-run
+
+### 単一writer
+
+`data/spool/worker.lock`のflockで単一writerを保証します。lockファイルはagent-history-data volume上にあるため、devコンテナとworkerコンテナが同じlockを見ます。devコンテナ側で`worker-start`を実行すると、次のように拒否されます（終了コード1）。
+
+    error: another agent-history worker is already running
+
+常駐サービス側は、lockが取れない場合に終了せず待機します。終了すると再起動ループになるためです。
+
+### DB初期化
+
+workerは`depends_on`の起動順だけに依存しません。起動時にスキーマの有無を確認し、無ければ既存の冪等な初期化処理を実行します。FTSインデックスの再構築を毎回走らせないため、準備済みの場合は何もしません。
+
+最大60秒待って準備できない場合は、理由をstderrへ出して終了します。無限に待ち続けて壊れたvolumeを隠すことはしません。
+
+    agent-history-worker: database is not initialized; applying schema to ...
+    agent-history-worker: database is ready
+
+    error: database not ready after 60s: ... (PermissionError: ...)
+
+### リソース制限とvolume
+
+workerにはdevコンテナとは別の小さい制限を設定しています。
+
+| 項目 | 値 |
+| --- | --- |
+| memory | 512MB |
+| reservation | 256MB |
+| memory+swap | 512MB（swap無効） |
+| CPU | 0.5 |
+| PID | 64 |
+| cap_drop | ALL |
+| no-new-privileges | true |
+| init | true |
+| restart | unless-stopped |
+| ログ | 10MB × 3 |
+
+volumeはdevコンテナと共有しますが、必要なものだけです。
+
+| volume | worker |
+| --- | --- |
+| agent-history-workspace | read-only（コードを読むだけ） |
+| agent-history-data | read-write（spoolとDB） |
+| agent-history-claude-home | **マウントしない** |
+| agent-history-codex-home | **マウントしない** |
+| agent-history-github-auth | **マウントしない** |
+
+workerは認証情報を必要としないため、認証volumeは渡しません。imageはdevと同一（`agent-history-dev:latest`）で、新規volumeも作りません。
+
+### restart: unless-stopped の挙動
+
+- ホストやDockerデーモンの予期しない再起動後、workerは復帰します
+- workerプロセスが異常終了した場合も復帰します（`RestartCount`が増えます）
+- `make dev-worker-stop`、`docker compose stop`、`docker compose down`で明示停止した場合は、デーモン再起動後も起動しません
 
 ## リソース制限
 
