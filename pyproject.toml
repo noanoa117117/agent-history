@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-history"
+version = "0.1.0"
+description = "Local SQLite history store for AI and human work sessions"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+agent-history = "agent_history.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+agent_history = ["schema.sql"]
