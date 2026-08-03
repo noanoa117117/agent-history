@@ -122,9 +122,11 @@ Claude Codeと同じ分離方針です。CLI本体はimage、認証情報はvolu
 
 agent-historyはproject-localの`.codex/hooks.json`で`SessionStart`、`UserPromptSubmit`、`Stop`、`SessionEnd`を登録します。初回またはhook変更後は、Codex TUI内で`/hooks`を開き、4件のproject hookを確認して` t `で信頼してください。信頼状態はCodex専用named volumeの`$CODEX_HOME/config.toml`に保存され、Git管理しません。
 
+Proxmox 上の恒久 VM での bind mount・systemd 自動起動・SQLite backup は [Proxmox VM 運用](proxmox-vm.md) にまとめています。
+
 `--dangerously-bypass-approvals-and-sandbox`と`--dangerously-bypass-hook-trust`は別の設定です。本構成では前者だけを使用し、後者は通常運用で使用しません。
 
-Codex hookはstdoutを出さず常にexit 0で戻ります。stdinをspoolへ置くだけでSQLiteを開かず、fsyncもしません。workerだけがサニタイズとDB書き込みを行います。`auth.json`、Codex内部SQLite、環境変数、transcript/rolloutは対象外です。
+Codex hookは常にexit 0で戻ります。通常はstdoutを出さず、CodexがJSON応答を要求する`Stop`だけは中立な`{"continue":true}`を返します。stdinをspoolへ置くだけでSQLiteを開かず、fsyncもしません。workerだけがサニタイズとDB書き込みを行います。`auth.json`、Codex内部SQLite、環境変数、transcript/rolloutは対象外です。
 
 Node.jsとCodex CLIはDockerfileのbuild時にインストールし、バージョンは.envのNODE_VERSIONとCODEX_VERSIONで固定します。Node.jsは公式バイナリ配布物をSHASUMS256.txtで検証して/usr/localへ展開し、Codex CLIはrootのままnpm install --globalします。これにより非rootユーザーは読み取り専用で利用でき、npmのグローバルインストール先による権限問題が発生しません。
 
@@ -354,7 +356,7 @@ memswap_limitはコンテナのRAMとswapの合計値です。3GBのRAM上限に
 | agent-history-claude-home | Claude Codeの認証、設定、会話履歴 |
 | agent-history-codex-home | Codex CLIの認証、設定、セッション履歴 |
 | agent-history-github-auth | gh認証、Git credential helper、global Git設定 |
-| agent-history-data | SQLite DB、data/logs/、data/dead-letter/、テスト成果物 |
+| agent-history-data | SQLite DB、data/spool/、テスト成果物 |
 
 SQLiteの既定パスは/workspace/agent-history/data/agent_history.dbです。ソースコードとGit履歴はworkspace volume、実行データはdata volumeに分けています。
 

@@ -1,0 +1,23 @@
+[Unit]
+Description=agent-history Docker Compose services
+Requires=docker.service
+RequiresMountsFor=/srv/agent-history
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=amida
+WorkingDirectory=/srv/agent-history/workspace/agent-history
+EnvironmentFile=/etc/agent-history/agent-history-vm.env
+# Compose is detached; failures are retried by systemd rather than bounded by
+# a start timeout.
+ExecStart=/usr/bin/docker compose -f compose.yaml -f compose.vm.yaml up -d --no-build
+ExecStop=/usr/bin/docker compose -f compose.yaml -f compose.vm.yaml stop
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=15s
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

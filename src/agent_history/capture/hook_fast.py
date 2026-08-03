@@ -60,6 +60,16 @@ def main(argv=None):
         # An observation-only hook must never fail Claude Code. Exit code 2 is
         # Claude's blocking signal, so every path here returns 0.
         _debug("%s: %s" % (type(exc).__name__, exc))
+
+    # Codex requires a JSON response from a Stop hook even when the hook is
+    # purely observational.  Keep every other event silent: SessionStart and
+    # UserPromptSubmit treat stdout as model-visible context, and the Claude
+    # hook contract intentionally requires no output.
+    if len(args) > 1 and args[0] == "Stop" and args[1] == "codex":
+        try:
+            sys.stdout.write('{"continue":true}\n')
+        except Exception:
+            pass
     return 0
 
 

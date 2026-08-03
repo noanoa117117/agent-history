@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "run as root (for example: sudo $0)" >&2
+    exit 2
+fi
+
+vm_root="${AGENT_HISTORY_VM_ROOT:-/srv/agent-history}"
+vm_user="${AGENT_HISTORY_VM_USER:-amida}"
+if ! id "$vm_user" >/dev/null 2>&1; then
+    echo "user does not exist: $vm_user" >&2
+    exit 2
+fi
+vm_group="${AGENT_HISTORY_VM_GROUP:-$(id -gn "$vm_user")}"
+
+actual_uid="$(id -u "$vm_user")"
+actual_gid="$(id -g "$vm_user")"
+env_file="${AGENT_HISTORY_VM_ENV_FILE:-/etc/agent-history/agent-history-vm.env}"
+
+# Read only simple KEY=VALUE lines from the VM environment file.  Do not
+# source it: systemd EnvironmentFile and Compose .env files are not shell
+# programs, and shell expansion here would hide UID/GID configuration errors.
+env_value() {
+    local wanted_key="$1"
+    local line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        case "$line" in
+            ''|\#*) continue ;;
+        esac
+        key="${line%%=*}"
+        if [ "$key" != "$wanted_key" ]; then
+            continue
+        fi
+        value="${line#*=}"
+        value="${value%$'\r'}"
+        printf '%s' "$value"
+        return 0
+    done < "$env_file"
+    return 1
+}
+
+if [ ! -e "$env_file" ]; then
+    echo "VM environment file does not exist: $env_file" >&2
+    echo "Install .env.vm.example there before running vm-init." >&2
+    exit 2
+fi
+if [ ! -f "$env_file" ] || [ ! -r "$env_file" ]; then
+    echo "VM environment file is not a readable regular file: $env_file" >&2
+    exit 2
+fi
+
+configured_uid="$(env_value DEV_UID || true)"
+configured_gid="$(env_value DEV_GID || true)"
+if [ -z "$configured_uid" ] || [ -z "$configured_gid" ]; then
+    echo "VM environment file must define DEV_UID and DEV_GID." >&2
+    echo "Set both values to the numeric IDs of $vm_user, then rerun." >&2
+    exit 2
+fi
+
+if [[ ! "$configured_uid" =~ ^[0-9]+$ ]] || [[ ! "$configured_gid" =~ ^[0-9]+$ ]]; then
+    echo "DEV_UID and DEV_GID must be numeric values; do not use shell expansion." >&2
+    echo "Set DEV_UID=$actual_uid and DEV_GID=$actual_gid in $env_file, then rerun." >&2
+    exit 2
+fi
+if [ "$configured_uid" != "$actual_uid" ] || [ "$configured_gid" != "$actual_gid" ]; then
+    echo "UID/GID mismatch for $vm_user:" >&2
+    echo "  actual:    DEV_UID=$actual_uid DEV_GID=$actual_gid" >&2
+    echo "  configured DEV_UID=$configured_uid DEV_GID=$configured_gid" >&2
+    echo "Set DEV_UID=$actual_uid and DEV_GID=$actual_gid in $env_file, then rerun." >&2
+    exit 2
+fi
+
+install_dir() {
+    local mode="$1"
+    local path="$2"
+    install -d -m "$mode" -o "$vm_user" -g "$vm_group" "$path"
+}
+
+install_dir 0750 "$vm_root"
+install_dir 0750 "$vm_root/workspace"
+install_dir 0750 "$vm_root/workspace/agent-history"
+install_dir 0700 "$vm_root/data"
+install_dir 0700 "$vm_root/data/spool"
+install_dir 0700 "$vm_root/data/spool/tmp"
+install_dir 0700 "$vm_root/data/spool/pending"
+install_dir 0700 "$vm_root/data/spool/failed"
+install_dir 0700 "$vm_root/claude-home"
+install_dir 0700 "$vm_root/codex-home"
+install_dir 0700 "$vm_root/github-auth"
+install_dir 0700 "$vm_root/backups"
+
+echo "Initialized VM directories below $vm_root for $vm_user:$vm_group"

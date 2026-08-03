@@ -1,8 +1,8 @@
 {
   "hooks": {
-    "SessionStart": [{"hooks": [{"type": "command", "command": "/workspace/agent-history/bin/agent-history-codex-hook SessionStart", "timeout": 3}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "/workspace/agent-history/bin/agent-history-codex-hook UserPromptSubmit", "timeout": 3}]}],
-    "Stop": [{"hooks": [{"type": "command", "command": "/workspace/agent-history/bin/agent-history-codex-hook Stop", "timeout": 3}]}],
-    "SessionEnd": [{"hooks": [{"type": "command", "command": "/workspace/agent-history/bin/agent-history-codex-hook SessionEnd", "timeout": 3}]}]
+    "SessionStart": [{"hooks": [{"type": "command", "command": "\"$(git rev-parse --show-toplevel)/bin/agent-history-codex-hook\" SessionStart", "timeout": 3}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "\"$(git rev-parse --show-toplevel)/bin/agent-history-codex-hook\" UserPromptSubmit", "timeout": 3}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "\"$(git rev-parse --show-toplevel)/bin/agent-history-codex-hook\" Stop", "timeout": 3}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "\"$(git rev-parse --show-toplevel)/bin/agent-history-codex-hook\" SessionEnd", "timeout": 3}]}]
   }
 }

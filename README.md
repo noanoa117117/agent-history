@@ -24,6 +24,8 @@ AI 内部の非表示な思考過程は保存対象にしません。保存対�
 
 Docker開発環境はこのagent-history repository内で管理します。ホスト側checkoutはDocker環境の起動・更新用、コンテナ側workspaceはClaude Code、Codex CLI、テスト、コード編集、commit、push用です。両方で同じコードを並行編集しません。詳細は[Docker隔離開発環境](docs/docker-development.md)を参照してください。
 
+Proxmox 上の恒久 VM で運用する場合は、[Proxmox VM 運用](docs/proxmox-vm.md)を参照してください。VM では Docker named volume ではなく、VM 内の bind mount と systemd による Compose 自動起動を使います。
+
 追加パッケージは不要です。Ubuntu の Python 3.9 以上を想定しています。SQLite が FTS5 を有効にしている必要があります。
 
 ホストのメモリを保護しながら開発・テスト・Claude Code・Codex CLI・GitHub操作を行うDocker構成は、[Docker隔離開発環境](docs/docker-development.md)を参照してください。Git作業ツリー、Claude設定、Codex設定、GitHub認証、SQLiteデータは専用named volumeへ分離します。
@@ -285,7 +287,7 @@ spool ファイルは `tmp/` に書いてから `os.replace` で `pending/` へ�
 
 ### Codex CLI の公式hooks
 
-Codexはリポジトリ内の[.codex/hooks.json](.codex/hooks.json)で、`SessionStart`、`UserPromptSubmit`、`Stop`、`SessionEnd`だけを記録します。Codexから渡されるstdin JSONを`bin/agent-history-codex-hook`が既存spoolへ置き、常駐workerがサニタイズしてSQLite/FTSへ取り込みます。
+Codexはリポジトリ内の[.codex/hooks.json](.codex/hooks.json)で、`SessionStart`、`UserPromptSubmit`、`Stop`、`SessionEnd`だけを記録します。hookコマンドはGitルートから解決するため、コンテナ内とホスト側のどちらで起動しても、そのcheckoutの`bin/agent-history-codex-hook`を実行します。Codexから渡されるstdin JSONをこのhookが既存spoolへ置き、常駐workerがサニタイズしてSQLite/FTSへ取り込みます。
 
 ```text
 Codex official hook → agent-history-codex-hook → spool → worker → SQLite / FTS
@@ -301,7 +303,7 @@ make dev-codex-external-sandbox
 
 `--dangerously-bypass-approvals-and-sandbox`はDockerコンテナを外部sandboxとして使うための設定で、hook trustとは別です。通常運用では`--dangerously-bypass-hook-trust`を使いません。hookの追加・変更後は再度`/hooks`で確認して信頼してください。
 
-保存するのはsession ID、turn ID、prompt、最終応答、cwd、model、開始元または終了理由です。`transcript_path`、rollout JSONL、Codex認証情報、内部SQLite、環境変数、system/developer prompt、内部推論、ツール生出力は読み取りも保存もしません。`source=codex`でClaude Codeの記録と区別できます。
+保存するのはsession ID、turn ID、prompt、最終応答、cwd、model、開始元または終了理由です。`transcript_path`、rollout JSONL、Codex認証情報、内部SQLite、環境変数、system/developer prompt、内部推論、ツール生出力は読み取りも保存もしません。`source=codex`でClaude Codeの記録と区別できます。Codexが`Stop` hookに要求するJSON応答として、hookは`{"continue":true}`だけを返します。これは処理を継続する中立な応答で、保存内容やモデルへの追加コンテキストを増やしません。
 
 rollout JSONLは初期収集経路ではありません。将来、hook導入前の履歴インポート、hookで取得できない情報の補完、障害時の再取り込みを検討する場合だけ、別途互換性を確認した上で扱います。
 
@@ -354,15 +356,17 @@ export AGENT_HISTORY_HOOK_MAX_JSON_BYTES=262144
 
 処理順序は「入力上限 → JSON解析 → サニタイズ → 安全な切り詰め → 保存」です。切り詰めはサニタイズの後に行うため、秘密情報の後半だけが残ることはありません。大きな文字列は先頭と末尾を残して UTF-8 境界を壊さずに切り詰め、空白を含まない base64 形式の巨大な値だけを `<REDACTED_BINARY>` に置き換えます（通常の長文は切り詰めるだけで捨てません）。
 
-stdin 全体が上限（既定 4 MiB、`AGENT_HISTORY_HOOK_MAX_JSON_BYTES` の 16 倍）を超えた場合は、切り詰めたJSONを安全に解析できないため、そのイベントは保存せず dead-letter に理由とハッシュだけを記録します。DB書き込みに失敗した場合は、サニタイズ済みJSONを `data/dead-letter/`（または設定した `AGENT_HISTORY_HOOK_DEAD_LETTER_DIR`）へ 0600 で保存し、診断情報を `data/logs/claude-hooks.log`（または `AGENT_HISTORY_HOOK_LOG`）へ最小限記録します。dead-letter も失敗した場合はエラー種別だけを試みて記録します。
+stdin 全体が上限（既定 4 MiB、`AGENT_HISTORY_HOOK_MAX_JSON_BYTES` の 16 倍）を超えた場合や worker が恒久エラーと判断した場合は、イベントを `data/spool/failed/` へ隔離します。元の spool ファイルと理由ファイルを残し、バッチ全体は停止しません。隔離先は `failed/` に統一し、`dead-letter/` という別の運用ディレクトリは使用しません。
 
-記録 Hook は stdout に何も出さず、成功・失敗のどちらでも原則終了コード 0 を返します。Claude Code の動作をブロックする終了コードや外部API呼び出しは行いません。ログとdead-letterはローテーションしないため、長期運用ではサイズを監視してください。
+なお、旧 `capture.claude_hook.process_hook` 直接呼び出し向けの互換 API とそのテストには `data/dead-letter/` が残っています。VM のインストール済み hook は `bin/agent-history-claude-hook` から spool 経路だけを使うため、通常運用では `data/spool/failed/` が唯一の隔離先です。
+
+記録 Hook は stdout に何も出さず、成功・失敗のどちらでも原則終了コード 0 を返します。Claude Code の動作をブロックする終了コードや外部API呼び出しは行いません。`data/spool/failed/` は自動ローテーションしないため、長期運用では件数とサイズを監視してください。
 
 ### サニタイズとトランスクリプト
 
 既存の `sanitizer.py` を再帰的に通し、ネストした辞書・配列、シェル形式、HTTPヘッダー、URLクエリ、秘密情報らしいJSONキーを処理します。API key、token、secret、password、Bearer、Cookie、AWS形式キー、メールアドレス、IPv4、PEM秘密鍵などは既定で置換されます。`<CLIENT_SECRET>`、`<ACCOUNT_ID>`、`<API_TOKEN>`、`example.com` 系の例は保持します。原文は保存しません。
 
-`transcript_path` はパス情報だけをホーム部分を `~` に正規化して保存し、ファイルを開いて全文インポートすることはありません。dead-letter に落ちた場合も同じ正規化を適用します。transcript再取り込みは将来課題です。
+`transcript_path` はパス情報だけをホーム部分を `~` に正規化して保存し、ファイルを開いて全文インポートすることはありません。`failed/` に隔離された場合も同じ保存範囲を適用します。transcript再取り込みは将来課題です。
 
 `Cookie` / `Set-Cookie` ヘッダー、`private_key`、文字列として埋め込まれた JSON（`{"password":"..."}`）も置換対象です。`cwd` と `old_cwd` / `new_cwd` は検索に必要なため正規化せずそのまま保存します。
 
@@ -373,7 +377,7 @@ stdin 全体が上限（既定 4 MiB、`AGENT_HISTORY_HOOK_MAX_JSON_BYTES` の 1
 ./bin/agent-history claude-sessions
 ```
 
-診断コマンドは Claude Code のバージョン、設定場所、導入状態、対象イベント、DB初期化状態、dead-letter件数、最近のエラー、最後に記録した Claude session を表示します。
+診断コマンドは Claude Code のバージョン、設定場所、導入状態、対象イベント、DB初期化状態、`failed/` 件数、最近のエラー、最後に記録した Claude session を表示します。
 
 ### 重複防止の基準
 
@@ -409,10 +413,10 @@ IPv4 判定では、`Ubuntu 24.04.1.2` のようにゼロ詰めの桁を含む�
 
 ## バックアップ
 
-DB 本体は WAL モードで動作するため、実行中の DB をコピーするより SQLite のバックアップ API や `.backup` を使う方が安全です。CLI の DB が停止中であることを確認したうえで、簡単なバックアップは次のようにできます。
+DB 本体は WAL モードで動作するため、実行中の DB を単純コピーするより SQLite のバックアップ API や `.backup` を使う方が安全です。VM 運用では次の script が `sqlite3` CLI または Python 標準ライブラリの online backup API を使い、整合性確認済みの 0600 ファイルを作成します。
 
 ```bash
-sqlite3 data/agent_history.db ".backup '/tmp/agent_history-backup.db'"
+scripts/agent-history-db-backup
 ```
 
 DB 本体、`-shm`、`-wal` は `.gitignore` で Git 管理対象外です。秘密情報を含む可能性があるため、バックアップ先の権限にも注意してください。

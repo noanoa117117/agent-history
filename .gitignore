@@ -8,6 +8,7 @@ htmlcov/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/backups/
 !data/.gitkeep
 data/dead-letter/*
 data/logs/*
@@ -17,11 +18,12 @@ data/spool/
 .env
 .env.*
 !.env.example
+!.env.vm.example
 # Agent CLI state directories: these hold auth.json and session history.
-# Already excluded from the image via .dockerignore; keep them out of Git too.
+# Keep the Codex hook definition tracked, but ignore every other Codex state
+# file (auth.json, sessions, config.toml, and future additions).
 .claude/
-.codex/
-!.codex/
+.codex/**
 !.codex/hooks.json
 *.key
 *.pem

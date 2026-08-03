@@ -1,0 +1,50 @@
+# Proxmox VM override.
+#
+# The base compose.yaml keeps the existing named-volume development workflow.
+# Use this file on the VM to put the same data at explicit VM paths:
+#
+#   docker compose --env-file /etc/agent-history/agent-history-vm.env \
+#     -f compose.yaml -f compose.vm.yaml up -d
+
+services:
+  agent-history-dev:
+    volumes:
+      - type: bind
+        source: ${AGENT_HISTORY_VM_WORKSPACE:?set AGENT_HISTORY_VM_WORKSPACE}
+        target: /workspace/agent-history
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${AGENT_HISTORY_VM_CLAUDE_HOME:?set AGENT_HISTORY_VM_CLAUDE_HOME}
+        target: /home/amida/.claude
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${AGENT_HISTORY_VM_CODEX_HOME:?set AGENT_HISTORY_VM_CODEX_HOME}
+        target: /home/amida/.codex
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${AGENT_HISTORY_VM_GITHUB_AUTH:?set AGENT_HISTORY_VM_GITHUB_AUTH}
+        target: /home/amida/.config/gh
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${AGENT_HISTORY_VM_DATA:?set AGENT_HISTORY_VM_DATA}
+        target: /workspace/agent-history/data
+        bind:
+          create_host_path: false
+
+  agent-history-worker:
+    volumes:
+      - type: bind
+        source: ${AGENT_HISTORY_VM_WORKSPACE:?set AGENT_HISTORY_VM_WORKSPACE}
+        target: /workspace/agent-history
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${AGENT_HISTORY_VM_DATA:?set AGENT_HISTORY_VM_DATA}
+        target: /workspace/agent-history/data
+        bind:
+          create_host_path: false

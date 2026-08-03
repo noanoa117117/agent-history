@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,10 @@ from pathlib import Path
 from agent_history.capture import hook_fast, spool
 from agent_history.db import connect_db, init_database
 from agent_history.worker.runner import Worker
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CODEX_HOOK = REPO_ROOT / "bin" / "agent-history-codex-hook"
 
 
 class CodexHookTests(unittest.TestCase):
@@ -77,3 +82,30 @@ class CodexHookTests(unittest.TestCase):
         path = self._spool("SessionStart", model="gpt-test")
         header, _ = spool.split_file(Path(path).read_bytes())
         self.assertEqual(json.loads(header)["src"], "codex")
+
+    def test_codex_stop_hook_returns_neutral_json_response(self):
+        environment = os.environ.copy()
+        environment["AGENT_HISTORY_SPOOL_DIR"] = self.spool_root
+        result = subprocess.run(
+            [str(CODEX_HOOK), "Stop"],
+            input=json.dumps(
+                {
+                    "session_id": "codex-session",
+                    "hook_event_name": "Stop",
+                    "cwd": "/workspace/agent-history",
+                    "turn_id": "turn-1",
+                }
+            ).encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(result.stdout, b'{"continue":true}\n')
+
+    def test_project_hook_commands_resolve_from_git_root(self):
+        hooks = json.loads((REPO_ROOT / ".codex" / "hooks.json").read_text())
+        for groups in hooks["hooks"].values():
+            command = groups[0]["hooks"][0]["command"]
+            self.assertIn("git rev-parse --show-toplevel", command)

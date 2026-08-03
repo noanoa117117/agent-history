@@ -4,11 +4,40 @@ set -Eeuo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-export DEV_UID="${DEV_UID:-$(id -u)}"
-export DEV_GID="${DEV_GID:-$(id -g)}"
+vm_env_file="${AGENT_HISTORY_VM_ENV_FILE:-/etc/agent-history/agent-history-vm.env}"
+vm_mode="${AGENT_HISTORY_VM_MODE:-0}"
+
+if [ "$vm_mode" = "1" ]; then
+    # The VM env file is the source of truth for Compose interpolation.  Do
+    # not let the shell user's UID/GID silently override its checked values.
+    unset DEV_UID DEV_GID
+else
+    export DEV_UID="${DEV_UID:-$(id -u)}"
+    export DEV_GID="${DEV_GID:-$(id -g)}"
+fi
+
+vm_checkout=0
+if [ "$root" = "/srv/agent-history/workspace/agent-history" ] \
+    || [ -e "$vm_env_file" ]; then
+    vm_checkout=1
+fi
+
+compose_args=(docker compose -f "$root/compose.yaml")
+if [ "$vm_mode" = "1" ]; then
+    if [ ! -r "$vm_env_file" ]; then
+        echo "VM environment file is not readable: $vm_env_file" >&2
+        exit 2
+    fi
+    compose_args=(
+        docker compose
+        --env-file "$vm_env_file"
+        -f "$root/compose.yaml"
+        -f "$root/compose.vm.yaml"
+    )
+fi
 
 compose() {
-    docker compose -f "$root/compose.yaml" "$@"
+    "${compose_args[@]}" "$@"
 }
 
 usage() {
@@ -51,6 +80,19 @@ EOF
 [ "$#" -ge 1 ] || usage
 command="$1"
 shift
+
+case "$command" in
+    host-status|host-pull)
+        ;;
+    *)
+        if [ "$vm_checkout" -eq 1 ] && [ "$vm_mode" != "1" ]; then
+            echo "This checkout is configured for the Proxmox VM." >&2
+            echo "Use the explicit VM targets (for example: make vm-start)." >&2
+            echo "Refusing to start the named-volume development Compose project." >&2
+            exit 2
+        fi
+        ;;
+esac
 
 case "$command" in
     build)
@@ -138,7 +180,7 @@ case "$command" in
         compose run --rm --no-deps agent-history-dev /usr/local/bin/agent-history-test "$@"
         ;;
     worker-start)
-        compose up -d agent-history-worker "$@"
+        compose up -d "$@" agent-history-worker
         ;;
     worker-stop)
         compose stop agent-history-worker "$@"
@@ -173,6 +215,11 @@ case "$command" in
         compose down --remove-orphans "$@"
         ;;
     purge)
+        if [ "$vm_mode" = "1" ]; then
+            echo "dev-purge is disabled for the VM bind-mount configuration." >&2
+            echo "The VM data and authentication directories require an explicit recovery procedure." >&2
+            exit 2
+        fi
         compose run --rm --no-deps agent-history-dev /usr/local/bin/agent-history-purge-check
         echo
         echo "WARNING: this removes agent-history-workspace, agent-history-claude-home,"

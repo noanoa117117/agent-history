@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+db_path="${AGENT_HISTORY_DB:-/srv/agent-history/data/agent_history.db}"
+backup_dir="${AGENT_HISTORY_BACKUP_DIR:-/srv/agent-history/backups}"
+
+test -f "$db_path" || {
+    echo "database does not exist: $db_path" >&2
+    exit 1
+}
+
+umask 077
+install -d -m 0700 "$backup_dir"
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+destination="$backup_dir/agent_history-$timestamp.db"
+if [ -e "$destination" ]; then
+    echo "backup already exists: $destination" >&2
+    exit 1
+fi
+temporary="$(mktemp "$backup_dir/.agent_history-backup.XXXXXX")"
+cleanup() {
+    rm -f -- "$temporary"
+}
+trap cleanup EXIT
+
+if command -v sqlite3 >/dev/null 2>&1; then
+    # sqlite3 .backup performs a logical online backup and does not require the
+    # worker to be stopped. The generated filename contains no shell metacharacters.
+    sqlite3 "$db_path" ".backup '$temporary'"
+    integrity="$(sqlite3 "$temporary" 'PRAGMA integrity_check;')"
+elif command -v python3 >/dev/null 2>&1; then
+    # Ubuntu VM hosts may not have the sqlite3 CLI package. Python's standard
+    # library exposes the same online backup API without an extra dependency.
+    python3 - "$db_path" "$temporary" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect(sys.argv[1])
+destination = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(destination)
+    result = destination.execute("PRAGMA integrity_check").fetchone()[0]
+finally:
+    destination.close()
+    source.close()
+if result != "ok":
+    raise SystemExit("backup integrity check failed: " + str(result))
+PY
+    integrity="ok"
+else
+    echo "sqlite3 or python3 is required" >&2
+    exit 127
+fi
+chmod 0600 "$temporary"
+test "$integrity" = ok || {
+    echo "backup integrity check failed: $temporary" >&2
+    exit 1
+}
+mv -- "$temporary" "$destination"
+trap - EXIT
+echo "$destination"

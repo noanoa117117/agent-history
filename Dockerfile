@@ -20,11 +20,14 @@ RUN apt-get update \
         curl \
         git \
         gh \
+        jq \
         less \
+        nano \
         procps \
         python3 \
         ripgrep \
         sqlite3 \
+        tree \
         xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
