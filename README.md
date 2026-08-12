@@ -184,7 +184,7 @@ cat /tmp/cockpit-context.md
 
 検索結果を session ごとの Markdown にまとめます。export は記事本文を生成せず、将来 `tech-writing` へ渡すコンテキストだけを作ります。`--output` を省略すると標準出力へ出します。
 
-## Stage 2: Claude Code Hooks
+## Stage 2: Claude Code / Codex CLI Hooks
 
 Claude Code の stdin JSON を `bin/agent-history-claude-hook` で受け取り、既存の SQLite DB へ保存します。Hook は外部通信をせず、AI 内部の非表示な思考過程や transcript 本文を読み込みません。保存するのは Claude Code が Hook に渡す観測可能な入力・出力、ツール名、入力・結果の制限付き投影、通知、エラー、作業ディレクトリなどです。
 
@@ -423,7 +423,7 @@ DB 本体、`-shm`、`-wal` は `.gitignore` で Git 管理対象外です。秘
 
 ## 現在の制約
 
-- Codex CLI、ブラウザ会話、シェル履歴は自動収集しません。Claude Code は Stage 2 の Hooks連携で観測可能なイベントを自動記録できます。Hookを導入しない場合は従来どおり event を CLI から明示登録します。
+- ブラウザ会話とシェル履歴は自動収集しません。Claude Code と Codex CLI は Stage 2 の公式 Hooks 連携で、観測可能なライフサイクルイベントを自動記録できます。Hook を導入しない場合は従来どおり event を CLI から明示登録します。
 - 日本語の形態素解析は導入していません。FTS5 の標準 tokenizer に LIKE 部分一致を併用するため、語単位ではなく部分一致になり、event 数が増えると LIKE 側の全表スキャンが遅くなります。
 - 認証・認可、HTTP 受信 API、Web UI はありません。単一ユーザーのローカル利用を前提にしています。
 - サニタイズは高信頼の正規表現ベースで、すべての秘密情報を保証するものではありません。保存前に内容を確認してください。
@@ -451,7 +451,7 @@ DB 本体、`-shm`、`-wal` は `.gitignore` で Git 管理対象外です。秘
 - Qiita/Zenn 記事生成
 - provenance 保存
 
-Codex CLI の自動ログ収集、`codex-logged` / `claude-logged` ラッパー、ChatGPT ブラウザ会話の自動取得、スクリーンショット保存、Qiita/Zenn 投稿なども将来構想であり、現在は実装していません。
+`codex-logged` / `claude-logged` ラッパー、ChatGPT ブラウザ会話の自動取得、スクリーンショット保存、Qiita/Zenn 投稿などは将来構想であり、現在は実装していません。Codex CLI の公式 Hooks による観測可能なライフサイクルイベントの自動収集は、Stage 2 として実装済みです。
 
 ## 開発とテスト
 

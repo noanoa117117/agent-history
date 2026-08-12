@@ -30,7 +30,7 @@ class VmConfigurationTests(unittest.TestCase):
 
     def test_vm_compose_uses_bind_mounts_without_host_path_creation(self):
         compose = (ROOT / "compose.vm.yaml").read_text()
-        self.assertEqual(compose.count("create_host_path: false"), 7)
+        self.assertEqual(compose.count("create_host_path: false"), 8)
         self.assertNotIn("agent-history-data:/", compose)
         self.assertNotIn("agent-history-workspace:/", compose)
 
@@ -65,6 +65,8 @@ class VmConfigurationTests(unittest.TestCase):
         self.assertIn("UID/GID mismatch", script)
         self.assertNotIn('configured_uid="${configured_uid:-$actual_uid}"', script)
         self.assertNotIn('configured_gid="${configured_gid:-$actual_gid}"', script)
+        self.assertIn('"$vm_root/workspace/projects"', script)
+        self.assertIn('"$vm_root/project-state"', script)
 
     def test_vm_env_permissions_are_documented(self):
         docs = (ROOT / "docs/proxmox-vm.md").read_text()

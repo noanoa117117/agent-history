@@ -74,12 +74,14 @@ RUN set -eux; \
     mkdir -p \
         /workspace/agent-history \
         /workspace/agent-history/data \
+        /workspace/projects \
         /home/amida/.claude \
         /home/amida/.codex \
         /home/amida/.config/gh \
         /home/amida/.local; \
     chown -R "$DEV_UID:$DEV_GID" \
         /workspace/agent-history \
+        /workspace/projects \
         /home/amida
 
 COPY --chmod=0755 container/agent-history-git-status /usr/local/bin/agent-history-git-status

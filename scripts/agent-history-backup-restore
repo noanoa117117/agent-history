@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Verify and restore a recovery archive into a new, non-live directory.
+set -Eeuo pipefail
+
+usage() {
+    echo "usage: $0 ARCHIVE DESTINATION" >&2
+    echo "DESTINATION must not exist; restoring over /srv/agent-history is refused." >&2
+    exit 64
+}
+
+[ "$#" -eq 2 ] || usage
+archive="$1"
+destination="$2"
+if [ ! -f "$archive" ]; then
+    echo "archive does not exist: $archive" >&2
+    exit 1
+fi
+if [ -e "$destination" ]; then
+    echo "destination already exists; refuse to overwrite: $destination" >&2
+    exit 2
+fi
+case "$destination" in
+    /srv/agent-history|/srv/agent-history/*)
+        echo "refusing to restore into the live agent-history root" >&2
+        exit 2
+        ;;
+esac
+
+checksum="$archive.sha256"
+if [ -f "$checksum" ]; then
+    (
+        cd "$(dirname -- "$archive")"
+        sha256sum -c "$(basename -- "$checksum")"
+    )
+fi
+
+# Do not unpack paths outside the staging directory even when a caller hands
+# this command an archive that was not produced by agent-history-backup.
+if tar -tzf "$archive" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+    echo "archive contains an unsafe path" >&2
+    exit 1
+fi
+
+parent="$(dirname -- "$destination")"
+install -d -m 0700 "$parent"
+stage="$(mktemp -d "$parent/.agent-history-restore.XXXXXX")"
+cleanup() { rm -rf -- "$stage"; }
+trap cleanup EXIT
+tar -xzf "$archive" -C "$stage"
+if [ ! -f "$stage/SHA256SUMS" ] || [ ! -f "$stage/data/agent_history.db" ] \
+    || [ ! -f "$stage/metadata.json" ]; then
+    echo "archive is missing required recovery files" >&2
+    exit 1
+fi
+(
+    cd "$stage"
+    sha256sum -c SHA256SUMS
+)
+
+python3 - "$stage/data/agent_history.db" "$stage/metadata.json" <<'PY'
+import json
+import re
+import sqlite3
+import sys
+
+db_path, metadata_path = sys.argv[1:]
+metadata = json.load(open(metadata_path, encoding="utf-8"))
+connection = sqlite3.connect(db_path)
+try:
+    integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+    if integrity != "ok":
+        raise SystemExit("restored SQLite integrity check failed: " + str(integrity))
+    expected = metadata.get("table_counts", {})
+    for table, count in expected.items():
+        actual = connection.execute("SELECT count(*) FROM " + table).fetchone()[0]
+        if actual != count:
+            raise SystemExit(f"table count mismatch for {table}: {actual} != {count}")
+    # Exercise FTS with a token from an actual indexed event when one exists.
+    row = connection.execute("SELECT content FROM events WHERE content IS NOT NULL LIMIT 1").fetchone()
+    if row and row[0]:
+        term = next(iter(re.findall(r"[0-9A-Za-z_]+", row[0])), None)
+        if term:
+            connection.execute("SELECT count(*) FROM events_fts WHERE events_fts MATCH ?", (term,)).fetchone()
+finally:
+    connection.close()
+PY
+
+chmod -R go-rwx "$stage"
+mv -- "$stage" "$destination"
+trap - EXIT
+echo "$destination"

@@ -5,7 +5,8 @@
 ## 前提
 
 - VM は Ubuntu 24.04 系を想定する
-- 初期メモリは 6 GiB。Codex と Claude Code は同時起動しない
+- vCPU は 4、RAM はホストの空きと既存 VM の予約を確認して決める（初期目安 16 GiB）
+- system disk は 32 GiB 以上、`/srv/agent-history` 専用 data disk は 64 GiB 以上
 - VM への着信はホストからの SSH のみ、外向き HTTPS は許可する
 - VM 内の利用者は `amida` 一人
 - ホストのホームディレクトリ、Git worktree、Docker socket は VM へマウントしない
@@ -39,6 +40,7 @@ VM の標準手順または Docker 公式パッケージ手順で導入してく
 ```text
 /srv/agent-history/
 ├── workspace/agent-history/  # Git worktree と Compose 定義
+├── workspace/projects/       # 管理対象の Git repository
 ├── data/                     # SQLite、spool、failed
 │   └── spool/
 │       ├── tmp/
@@ -47,6 +49,7 @@ VM の標準手順または Docker 公式パッケージ手順で導入してく
 ├── claude-home/              # 0700、認証情報を含む
 ├── codex-home/               # 0700、認証情報を含む
 ├── github-auth/              # 0700、認証情報を含む
+├── project-state/            # project.json と生成された progress.md
 └── backups/                  # SQLite online backup
 ```
 
@@ -77,6 +80,10 @@ sudo AGENT_HISTORY_VM_ENV_FILE=/etc/agent-history/agent-history-vm.env \
 シェル展開は記入しません。init script が `amida` の実 UID/GID と一致することを
 検証し、不一致なら理由と修正方法を表示して停止します。環境ファイルにはパスと
 バージョンだけを置き、認証情報は記録しません。
+
+`agent-history-vm-init` は `workspace/projects` と `project-state` も作成します。
+agent-shell には projects を `/workspace/projects` として bind mount します。worker
+には project worktree、Codex/Claude/GitHub 認証情報を一切 mount しません。
 
 ## Compose
 
@@ -130,6 +137,27 @@ Docker の一時的な起動失敗時は 15 秒後に再試行します。system
 
 VM 起動時に起動するのはコンテナと worker までです。Codex / Claude Code は SSH 接続後、必要な project で手動起動します。
 
+## 初回認証と通常運用
+
+認証情報は VM 内の bind mount にだけ保存します。ホスト側の `~/.codex`、`~/.claude`、
+`~/.ssh`、GitHub 認証をコピーしたり mount したりしません。VM に SSH で接続した後、
+agent-shell 内で個別に認証します。
+
+```bash
+cd /srv/agent-history/workspace/agent-history
+make vm-codex-login       # 対話的な Codex login
+make vm-codex-status
+make vm-gh-login          # GitHub device/web login
+make vm-gh-status
+make vm-claude            # Claude Code の初回対話 login を VM 内で行う
+```
+
+通常起動・停止は `sudo systemctl start|stop|restart agent-history-compose.service` を
+使います。障害調査は `journalctl -u agent-history-compose.service -b`、
+`make vm-status`、`make vm-worker-logs`、`make vm-worker-status` の順で行います。
+更新時は host checkout を共有せず、VM 内 checkout で pull、明示 build、systemd restart を
+行い、最後に `make vm-test` を実行します。
+
 ## VM 上の Make 操作
 
 VM の checkout では、通常の `make dev-start` や `make dev-worker-restart` を
@@ -172,6 +200,60 @@ Proxmox VM バックアップを主経路とし、SQLite backup は DB 単体の
 
 出力された DB に `PRAGMA integrity_check` を実行してから保存するため、WAL の付属ファイルを個別に扱う必要はありません。生成物は `backups/` に 0600 で置かれます。
 
+実運用の世代バックアップには、DB 単体 script ではなく次を使います。
+
+```bash
+/srv/agent-history/workspace/agent-history/scripts/agent-history-backup
+```
+
+この script は SQLite Backup API で DB を online snapshot し、pending/failed spool、
+project-state、Compose/systemd/VM 初期化定義、許可リスト化した VM 環境設定を 1 つの
+`agent-history-backup-*.tar.gz` にまとめます。アーカイブと内容物の SHA-256、
+`PRAGMA integrity_check`、sessions/events/targets/FTS の件数を確認します。認証
+ディレクトリは含めません。既定 14 世代は `AGENT_HISTORY_BACKUP_KEEP` で変更できます。
+
+復元は live root を上書きせず、新しい空ディレクトリへだけ行います。
+
+```bash
+scripts/agent-history-backup-restore \
+  /srv/agent-history/backups/agent-history-backup-YYYYMMDDTHHMMSSZ.tar.gz \
+  /srv/agent-history-restore-test
+AGENT_HISTORY_DB=/srv/agent-history-restore-test/data/agent_history.db \
+  /srv/agent-history/workspace/agent-history/bin/agent-history session-list
+```
+
+restore script は archive checksum、全ファイル checksum、SQLite integrity、主要 table
+件数、利用可能な場合は FTS query を確認します。検証後に restore test root を本番へ
+切り替える場合は、worker を停止して別途承認済みの復旧手順で行います。
+
+## Proxmox での再現可能な作成
+
+このリポジトリの `scripts/proxmox-agent-history-vm-create` は Proxmox **ホスト上でのみ**
+実行します。先に `pveversion -v`、`qm list`、`pct list`、`pvesm status`、`free -h`、
+`ip -brief link`、cloud image 一覧を採取してから、未使用 VMID・storage・bridge・RAM を
+決定してください。VMID または `agent-history-vm` 名の衝突時には、script は何も上書き
+しません。
+
+Ubuntu cloud image は取得元の `SHA256SUMS` で検証し、image path と digest を引数で
+渡します。script はその digest、選択値、cloud-init snippet を `.provisioning.txt` に
+記録します。public SSH key だけを cloud-init に渡し、host `/home`、worktree、private
+key、Codex/Claude 認証情報はコピーも mount もしません。
+
+```bash
+sudo scripts/proxmox-agent-history-vm-create \
+  --vmid SELECTED_ID --storage SELECTED_STORAGE --bridge SELECTED_BRIDGE \
+  --image /path/to/noble-server-cloudimg-amd64.img --image-sha256 VERIFIED_SHA256 \
+  --ssh-public-key /path/to/amida.pub \
+  --snippet-storage SELECTED_SNIPPET_STORAGE \
+  --snippet-path /resolved/snippets/agent-history-vm-SELECTED_ID.yaml \
+  --memory-mib SELECTED_MEMORY_MIB --ip-config ip=dhcp
+```
+
+cloud-init enables QEMU Guest Agent and Docker, mounts/formats only a single
+otherwise-unmounted data disk using the `agent-history-data` label, builds the
+image explicitly, then enables the Compose systemd unit. It fails rather than
+guessing if the guest sees zero or more than one candidate data disk.
+
 第一段階の Proxmox バックアップは同じ物理ホスト上の保存先を暫定利用します。ホスト障害には耐えないため、後で別ディスク、NAS、Proxmox Backup Server などへ移します。
 
 通常バックアップに認証情報を含めない方針を維持する場合は、将来、履歴データ用ディスクと認証ディレクトリ用ディスクを分離し、Proxmox 側で認証ディスクをバックアップ対象外にします。初期構築ではこの分離方法を確定してから完全 VM バックアップを有効化します。
@@ -184,3 +266,8 @@ Proxmox VM バックアップを主経路とし、SQLite backup は DB 単体の
 4. worker が SQLite へ取り込み、`session-list` と `search` で確認できる。
 5. worker 停止中の pending を再起動後に取り込める。
 6. `agent-history-db-backup` の生成 DB を別名で指定し、`session-list` と `search` が成功する。
+7. `agent-history-backup` を作成し、`agent-history-backup-restore` で別 root へ復元して
+   integrity/table count/FTS と pending/failed/project-state を確認する。
+8. `systemctl reboot` 前に `systemctl stop agent-history-compose.service` と worker の
+   spool drain 状態を確認し、再起動後に `systemctl is-active`、`docker compose ps`、
+   `journalctl -u agent-history-compose.service -b` を確認する。

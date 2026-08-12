@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Create one self-contained, integrity-checked recovery archive.
+#
+# Authentication directories are intentionally not included.  The copied VM
+# environment file is allow-listed, so a future accidental secret entry cannot
+# enter an archive by way of /etc/agent-history.
+set -Eeuo pipefail
+
+vm_root="${AGENT_HISTORY_VM_ROOT:-/srv/agent-history}"
+repo_root="${AGENT_HISTORY_REPO_PATH:-$vm_root/workspace/agent-history}"
+data_dir="${AGENT_HISTORY_DATA_DIR:-$vm_root/data}"
+db_path="${AGENT_HISTORY_DB:-$data_dir/agent_history.db}"
+state_dir="${AGENT_HISTORY_PROJECT_STATE_DIR:-$vm_root/project-state}"
+backup_dir="${AGENT_HISTORY_BACKUP_DIR:-$vm_root/backups}"
+env_file="${AGENT_HISTORY_VM_ENV_FILE:-/etc/agent-history/agent-history-vm.env}"
+keep="${AGENT_HISTORY_BACKUP_KEEP:-14}"
+
+if [[ ! "$keep" =~ ^[1-9][0-9]*$ ]]; then
+    echo "AGENT_HISTORY_BACKUP_KEEP must be a positive integer" >&2
+    exit 2
+fi
+for required in "$db_path" "$repo_root/compose.yaml" "$repo_root/compose.vm.yaml" \
+    "$repo_root/systemd/agent-history-compose.service"; do
+    if [ ! -f "$required" ]; then
+        echo "required backup source does not exist: $required" >&2
+        exit 1
+    fi
+done
+
+umask 077
+install -d -m 0700 "$backup_dir"
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+archive="$backup_dir/agent-history-backup-$timestamp.tar.gz"
+checksum="$archive.sha256"
+if [ -e "$archive" ] || [ -e "$checksum" ]; then
+    echo "backup already exists: $archive" >&2
+    exit 1
+fi
+stage="$(mktemp -d "$backup_dir/.agent-history-backup.XXXXXX")"
+archive_tmp="$backup_dir/.agent-history-backup-$timestamp.tar.gz.tmp"
+checksum_tmp="$backup_dir/.agent-history-backup-$timestamp.sha256.tmp"
+cleanup() {
+    rm -rf -- "$stage"
+    rm -f -- "$archive_tmp" "$checksum_tmp"
+}
+trap cleanup EXIT
+
+install -d -m 0700 "$stage/data/spool/pending" "$stage/data/spool/failed" \
+    "$stage/project-state" "$stage/config/repository" "$stage/config/systemd"
+
+# sqlite3 .backup and sqlite3.Connection.backup both acquire a consistent
+# online snapshot.  A filesystem copy of a live WAL database is not used.
+python3 - "$db_path" "$stage/data/agent_history.db" "$stage/metadata.json" <<'PY'
+import json
+import sqlite3
+import sys
+
+source_path, destination_path, metadata_path = sys.argv[1:]
+source = sqlite3.connect(source_path)
+destination = sqlite3.connect(destination_path)
+try:
+    source.backup(destination)
+    integrity = destination.execute("PRAGMA integrity_check").fetchone()[0]
+    if integrity != "ok":
+        raise SystemExit("SQLite backup integrity check failed: " + str(integrity))
+    counts = {}
+    for table in ("sessions", "events", "targets", "session_targets", "events_fts"):
+        counts[table] = destination.execute("SELECT count(*) FROM " + table).fetchone()[0]
+finally:
+    destination.close()
+    source.close()
+with open(metadata_path, "w", encoding="utf-8") as handle:
+    json.dump({"schema": 1, "table_counts": counts}, handle, sort_keys=True)
+    handle.write("\n")
+PY
+chmod 0600 "$stage/data/agent_history.db" "$stage/metadata.json"
+
+for spool_part in pending failed; do
+    source_dir="$data_dir/spool/$spool_part"
+    if [ -d "$source_dir" ]; then
+        cp -a "$source_dir/." "$stage/data/spool/$spool_part/"
+    fi
+done
+if [ -d "$state_dir" ]; then
+    cp -a "$state_dir/." "$stage/project-state/"
+fi
+
+install -m 0600 "$repo_root/compose.yaml" "$stage/config/repository/compose.yaml"
+install -m 0600 "$repo_root/compose.vm.yaml" "$stage/config/repository/compose.vm.yaml"
+install -m 0600 "$repo_root/systemd/agent-history-compose.service" \
+    "$stage/config/systemd/agent-history-compose.service"
+install -m 0700 "$repo_root/scripts/agent-history-vm-init" \
+    "$stage/config/repository/agent-history-vm-init"
+install -m 0700 "$repo_root/scripts/agent-history-backup" \
+    "$stage/config/repository/agent-history-backup"
+install -m 0700 "$repo_root/scripts/agent-history-backup-restore" \
+    "$stage/config/repository/agent-history-backup-restore"
+
+# This is configuration, not an authentication store.  Preserve only fields
+# accepted by .env.vm.example and discard every unknown line.
+if [ -r "$env_file" ]; then
+    awk -F= '
+        /^(DEV_UID|DEV_GID|AGENT_HISTORY_VM_WORKSPACE|AGENT_HISTORY_VM_PROJECTS|AGENT_HISTORY_VM_DATA|AGENT_HISTORY_VM_CLAUDE_HOME|AGENT_HISTORY_VM_CODEX_HOME|AGENT_HISTORY_VM_GITHUB_AUTH|AGENT_HISTORY_PROJECTS_DIR|AGENT_HISTORY_PROJECT_STATE_DIR|AGENT_HISTORY_REPO_URL|AGENT_HISTORY_BRANCH|CLAUDE_CODE_VERSION|NODE_VERSION|CODEX_VERSION)=/ { print }
+    ' "$env_file" > "$stage/config/agent-history-vm.env"
+    chmod 0600 "$stage/config/agent-history-vm.env"
+fi
+
+(
+    cd "$stage"
+    find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+    tar -czf "$archive_tmp" .
+)
+mv -- "$archive_tmp" "$archive"
+sha256sum "$archive" > "$checksum_tmp"
+mv -- "$checksum_tmp" "$checksum"
+chmod 0600 "$archive" "$checksum"
+
+# Keep the newest complete generations.  Names are generated above, rather
+# than accepted from callers, so deleting the paired old generation is scoped.
+mapfile -t archives < <(
+    find "$backup_dir" -maxdepth 1 -type f -name 'agent-history-backup-*.tar.gz' \
+        -printf '%f\n' | sort -r
+)
+if [ "${#archives[@]}" -gt "$keep" ]; then
+    for stale in "${archives[@]:$keep}"; do
+        rm -f -- "$backup_dir/$stale" "$backup_dir/$stale.sha256"
+    done
+fi
+
+trap - EXIT
+rm -rf -- "$stage"
+echo "$archive"

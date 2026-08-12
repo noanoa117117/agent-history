@@ -15,6 +15,11 @@ services:
         bind:
           create_host_path: false
       - type: bind
+        source: ${AGENT_HISTORY_VM_PROJECTS:?set AGENT_HISTORY_VM_PROJECTS}
+        target: /workspace/projects
+        bind:
+          create_host_path: false
+      - type: bind
         source: ${AGENT_HISTORY_VM_CLAUDE_HOME:?set AGENT_HISTORY_VM_CLAUDE_HOME}
         target: /home/amida/.claude
         bind:

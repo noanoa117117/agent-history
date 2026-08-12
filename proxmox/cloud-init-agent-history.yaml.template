@@ -1,0 +1,62 @@
+#cloud-config
+# Rendered only on the Proxmox node by scripts/proxmox-agent-history-vm-create.
+# It contains no private key, token, password, host worktree, or host mount.
+hostname: __HOSTNAME__
+manage_etc_hosts: true
+users:
+  - default
+  - name: __VM_USER__
+    shell: /bin/bash
+    lock_passwd: true
+packages:
+  - ca-certificates
+  - docker.io
+  - docker-compose-v2
+  - git
+  - qemu-guest-agent
+  - python3
+  - sqlite3
+package_update: true
+package_upgrade: false
+write_files:
+  - path: /usr/local/sbin/agent-history-mount-data
+    owner: root:root
+    permissions: '0700'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      root=__VM_ROOT__
+      label=agent-history-data
+      device="$(blkid -L "$label" || true)"
+      if [ -z "$device" ]; then
+        mapfile -t candidates < <(
+          while IFS= read -r disk; do
+            if ! lsblk -nr -o MOUNTPOINT "$disk" | grep -q .; then
+              printf '%s\n' "$disk"
+            fi
+          done < <(lsblk -dnpr -o NAME,TYPE | awk '$2 == "disk" { print $1 }')
+        )
+        if [ "${#candidates[@]}" -ne 1 ]; then
+          echo "expected exactly one unmounted data disk; found ${#candidates[@]}" >&2
+          exit 1
+        fi
+        device="${candidates[0]}"
+        mkfs.ext4 -F -L "$label" "$device"
+      fi
+      install -d -m 0750 "$root"
+      uuid="$(blkid -s UUID -o value "$device")"
+      grep -q "[[:space:]]$root[[:space:]]" /etc/fstab || \
+        printf 'UUID=%s %s ext4 defaults,noatime 0 2\n' "$uuid" "$root" >> /etc/fstab
+      mountpoint -q "$root" || mount "$root"
+runcmd:
+  - [systemctl, enable, --now, qemu-guest-agent]
+  - [systemctl, enable, --now, docker]
+  - [bash, -lc, "usermod -aG docker __VM_USER__"]
+  - [bash, -lc, /usr/local/sbin/agent-history-mount-data]
+  - [bash, -lc, "install -d -o __VM_USER__ -g __VM_USER__ -m 0750 __VM_ROOT__/workspace"]
+  - [bash, -lc, "git clone __REPO_URL__ __VM_ROOT__/workspace/agent-history"]
+  - [bash, -lc, "install -d -o root -g __VM_USER__ -m 0750 /etc/agent-history && install -o root -g __VM_USER__ -m 0640 __VM_ROOT__/workspace/agent-history/.env.vm.example /etc/agent-history/agent-history-vm.env"]
+  - [bash, -lc, "AGENT_HISTORY_VM_ENV_FILE=/etc/agent-history/agent-history-vm.env __VM_ROOT__/workspace/agent-history/scripts/agent-history-vm-init"]
+  - [bash, -lc, "runuser -u __VM_USER__ -- sh -lc 'cd __VM_ROOT__/workspace/agent-history && make vm-build'"]
+  - [bash, -lc, "install -m 0644 __VM_ROOT__/workspace/agent-history/systemd/agent-history-compose.service /etc/systemd/system/agent-history-compose.service && systemctl daemon-reload && systemctl enable --now agent-history-compose.service"]
+final_message: "agent-history bootstrap completed; authenticate Codex, Claude, and GitHub independently inside the VM."

@@ -43,6 +43,8 @@ services:
       AGENT_HISTORY_REPO_URL: "${AGENT_HISTORY_REPO_URL:-https://github.com/noanoa117117/agent-history.git}"
       AGENT_HISTORY_BRANCH: "${AGENT_HISTORY_BRANCH:-main}"
       AGENT_HISTORY_REPO_PATH: /workspace/agent-history
+      AGENT_HISTORY_PROJECTS_DIR: "${AGENT_HISTORY_PROJECTS_DIR:-/workspace/projects}"
+      AGENT_HISTORY_PROJECT_STATE_DIR: "${AGENT_HISTORY_PROJECT_STATE_DIR:-/workspace/agent-history/project-state}"
     volumes:
       - agent-history-workspace:/workspace/agent-history
       - agent-history-claude-home:/home/amida/.claude

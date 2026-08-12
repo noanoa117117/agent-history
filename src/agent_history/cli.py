@@ -6,6 +6,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from .commands import CommandError
@@ -13,6 +14,7 @@ from .commands import event as event_commands
 from .commands import claude_hook as claude_hook_commands
 from .commands import export as export_commands
 from .commands import init_db
+from .commands import project as project_commands
 from .commands import search as search_commands
 from .commands import session as session_commands
 from .commands import target as target_commands
@@ -90,6 +92,36 @@ def build_parser() -> argparse.ArgumentParser:
     relation.add_argument("--relation", dest="relation_type", default="related")
     relation.add_argument("--confidence", type=float)
     relation.add_argument("--assigned-by", default="manual")
+
+    project_register = subparsers.add_parser(
+        "project-register", help="register a Git repository and create resumable project state"
+    )
+    project_register.add_argument("--slug", required=True)
+    project_register.add_argument("--name", required=True)
+    project_register.add_argument("--root-path", required=True)
+    project_register.add_argument("--state-root")
+
+    project_update = subparsers.add_parser(
+        "project-update", help="update concise project state without copying event history"
+    )
+    project_update.add_argument("--slug", required=True)
+    project_update.add_argument("--state-root")
+    project_update.add_argument("--current-status")
+    project_update.add_argument("--completed")
+    project_update.add_argument("--decision")
+    project_update.add_argument("--blocker")
+    project_update.add_argument("--next-action")
+
+    project_show = subparsers.add_parser("project-show", help="show resumable project state")
+    project_show.add_argument("--slug", required=True)
+    project_show.add_argument("--state-root")
+
+    project_link = subparsers.add_parser(
+        "project-link-session", help="link an existing session to a registered repository target"
+    )
+    project_link.add_argument("--slug", required=True)
+    project_link.add_argument("--session", dest="session_id", required=True)
+    project_link.add_argument("--state-root")
 
     search = subparsers.add_parser("search", help="search event content with SQLite FTS5")
     search.add_argument("query")
@@ -233,6 +265,43 @@ def _run(args: argparse.Namespace) -> str:
             f"Linked session {args.session_id} to target {args.target_id} "
             f"({args.relation_type})"
         )
+    if args.command == "project-register":
+        state = project_commands.register_project(
+            db_path,
+            slug=args.slug,
+            name=args.name,
+            root_path=args.root_path,
+            state_root=args.state_root,
+        )
+        state_root = Path(args.state_root).expanduser() if args.state_root else project_commands.project_state_root(db_path)
+        return (
+            f"Registered project {state['slug']} as repository target {state['target_id']}\n"
+            f"State: {state_root / state['slug'] / 'progress.md'}"
+        )
+    if args.command == "project-update":
+        state = project_commands.update_project(
+            db_path,
+            slug=args.slug,
+            state_root=args.state_root,
+            current_status=args.current_status,
+            completed=args.completed,
+            decision=args.decision,
+            blocker=args.blocker,
+            next_action=args.next_action,
+        )
+        return f"Updated project {state['slug']}"
+    if args.command == "project-show":
+        return project_commands.show_project(
+            db_path, slug=args.slug, state_root=args.state_root
+        )
+    if args.command == "project-link-session":
+        project_commands.link_session(
+            db_path,
+            slug=args.slug,
+            session_id=args.session_id,
+            state_root=args.state_root,
+        )
+        return f"Linked session {args.session_id} to project {args.slug}"
     if args.command == "search":
         results = search_commands.search_events(
             db_path,
