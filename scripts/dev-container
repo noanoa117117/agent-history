@@ -52,6 +52,8 @@ commands:
   shell       Open a shell in the running container
   claude      Run Claude Code in the running container
   codex       Run Codex CLI in the running container
+  project-claude Run Claude Code in a registered project
+  project-codex Run Codex CLI with shared hooks in a registered project
   codex-external-sandbox Run Codex CLI with external Docker isolation
   codex-login Authenticate Codex CLI (browser/device login)
   codex-status Show Codex CLI login status
@@ -144,6 +146,24 @@ case "$command" in
         ;;
     codex)
         compose exec -it agent-history-dev codex "$@"
+        ;;
+    project-claude|project-codex)
+        [ "$#" -ge 1 ] || { echo "PROJECT slug is required" >&2; exit 64; }
+        project_slug="$1"
+        shift
+        project_path="$(compose exec -T agent-history-dev \
+            ./bin/agent-history project-path --slug "$project_slug")"
+        if [ "$command" = "project-claude" ]; then
+            compose exec -it --workdir "$project_path" agent-history-dev claude "$@"
+        else
+            compose exec -it --workdir "$project_path" agent-history-dev codex \
+                --dangerously-bypass-hook-trust \
+                -c 'hooks.SessionStart=[{hooks=[{type="command",command="/workspace/agent-history/bin/agent-history-codex-hook SessionStart",timeout=3}]}]' \
+                -c 'hooks.UserPromptSubmit=[{hooks=[{type="command",command="/workspace/agent-history/bin/agent-history-codex-hook UserPromptSubmit",timeout=3}]}]' \
+                -c 'hooks.Stop=[{hooks=[{type="command",command="/workspace/agent-history/bin/agent-history-codex-hook Stop",timeout=3}]}]' \
+                -c 'hooks.SessionEnd=[{hooks=[{type="command",command="/workspace/agent-history/bin/agent-history-codex-hook SessionEnd",timeout=3}]}]' \
+                "$@"
+        fi
         ;;
     codex-external-sandbox)
         compose exec -it agent-history-dev codex \

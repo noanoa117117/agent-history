@@ -7,7 +7,8 @@
 	vm-codex-login vm-codex-status vm-gh-login vm-gh-status vm-git-status \
 	vm-git-log vm-pull vm-push vm-test vm-logs vm-status vm-worker-start \
 	vm-worker-stop vm-worker-restart vm-worker-status vm-worker-logs \
-	vm-worker-drain vm-stop vm-clean vm-purge
+	vm-worker-drain vm-stop vm-clean vm-purge \
+	vm-project-claude vm-project-codex
 
 VM_ENV_FILE ?= /etc/agent-history/agent-history-vm.env
 VM_RUN = AGENT_HISTORY_VM_MODE=1 AGENT_HISTORY_VM_ENV_FILE=$(VM_ENV_FILE) ./scripts/dev-container
@@ -113,6 +114,12 @@ vm-claude:
 
 vm-codex:
 	$(VM_RUN) codex $(CODEX_ARGS)
+
+vm-project-claude:
+	$(VM_RUN) project-claude "$(PROJECT)" $(CLAUDE_ARGS)
+
+vm-project-codex:
+	$(VM_RUN) project-codex "$(PROJECT)" $(CODEX_ARGS)
 
 vm-codex-external-sandbox:
 	$(VM_RUN) codex-external-sandbox $(CODEX_ARGS)

@@ -18,6 +18,10 @@ agent-history project-register \
   --root-path /workspace/projects/example-project
 ```
 
+VMでは登録後、`make vm-project-codex PROJECT=example-project` または
+`make vm-project-claude PROJECT=example-project` で、そのrepositoryをcwdとして起動できます。
+sessionはhookのcwdから登録済みrepository targetへworker取込時に自動関連付けされます。
+
 登録時に root path、`origin` remote、default/current branch、HEAD commit を取得し、
 既存 SQLite の `repository` target を更新します。新規テーブルや追加 writer は使い
 ません。remote のない local repository も登録できます。

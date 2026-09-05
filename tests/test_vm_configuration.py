@@ -30,7 +30,9 @@ class VmConfigurationTests(unittest.TestCase):
 
     def test_vm_compose_uses_bind_mounts_without_host_path_creation(self):
         compose = (ROOT / "compose.vm.yaml").read_text()
-        self.assertEqual(compose.count("create_host_path: false"), 8)
+        self.assertEqual(compose.count("create_host_path: false"), 9)
+        self.assertIn("target: /workspace/project-state", compose)
+        self.assertIn("AGENT_HISTORY_PROJECT_STATE_DIR: /workspace/project-state", compose)
         self.assertNotIn("agent-history-data:/", compose)
         self.assertNotIn("agent-history-workspace:/", compose)
 
@@ -49,6 +51,15 @@ class VmConfigurationTests(unittest.TestCase):
         makefile = (ROOT / "Makefile").read_text()
         self.assertIn("vm-start:", makefile)
         self.assertIn("vm-worker-restart:", makefile)
+        self.assertIn("vm-project-codex:", makefile)
+        self.assertIn("vm-project-claude:", makefile)
+        launcher = (ROOT / "scripts" / "dev-container").read_text()
+        self.assertIn("project-path --slug", launcher)
+        self.assertEqual(launcher.count("hooks.SessionStart="), 1)
+        self.assertEqual(launcher.count("hooks.UserPromptSubmit="), 1)
+        self.assertEqual(launcher.count("hooks.Stop="), 1)
+        self.assertEqual(launcher.count("hooks.SessionEnd="), 1)
+        self.assertIn("--dangerously-bypass-hook-trust", launcher)
         self.assertIn("AGENT_HISTORY_VM_MODE=1", makefile)
         self.assertIn("$(VM_RUN) start --no-build", makefile)
         self.assertIn("$(VM_RUN) worker-start --no-build", makefile)

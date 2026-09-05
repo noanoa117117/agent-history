@@ -197,6 +197,39 @@ def _resolve_session(
     return session_id
 
 
+def _link_session_to_cwd_target(
+    connection: sqlite3.Connection, session_id: str, cwd: Any, occurred_at: str
+) -> None:
+    """Link a session to the most specific registered repository containing cwd."""
+
+    if not isinstance(cwd, str) or not os.path.isabs(cwd):
+        return
+    normalized_cwd = os.path.realpath(cwd)
+    match = None
+    for row in connection.execute(
+        "SELECT id, locator FROM targets "
+        "WHERE target_type = 'repository' AND locator IS NOT NULL"
+    ).fetchall():
+        root = os.path.realpath(str(row["locator"]))
+        try:
+            contained = os.path.commonpath((normalized_cwd, root)) == root
+        except ValueError:
+            contained = False
+        if contained and (match is None or len(root) > match[0]):
+            match = (len(root), int(row["id"]))
+    if match is None:
+        return
+    connection.execute(
+        """
+        INSERT INTO session_targets
+            (session_id, target_id, relation_type, confidence, assigned_by, created_at)
+        VALUES (?, ?, 'worked_on', 1.0, 'cwd-auto', ?)
+        ON CONFLICT(session_id, target_id) DO NOTHING
+        """,
+        (session_id, match[1], occurred_at),
+    )
+
+
 def ingest_batch(
     connection: sqlite3.Connection,
     items: Sequence[Tuple[SpoolItem, PreparedEvent]],
@@ -218,6 +251,10 @@ def ingest_batch(
                 connection, item.capture_source, source_session_id, item.payload, occurred_at
             )
             sessions[session_key] = session_id
+
+        _link_session_to_cwd_target(
+            connection, session_id, item.payload.get("cwd"), occurred_at
+        )
 
         if session_id not in sequences:
             # One MAX() per session per batch instead of one per event.

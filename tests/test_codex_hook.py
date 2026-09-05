@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agent_history.capture import hook_fast, spool
 from agent_history.db import connect_db, init_database
+from agent_history.commands.target import add_target
 from agent_history.worker.runner import Worker
 
 
@@ -82,6 +83,29 @@ class CodexHookTests(unittest.TestCase):
         path = self._spool("SessionStart", model="gpt-test")
         header, _ = spool.split_file(Path(path).read_bytes())
         self.assertEqual(json.loads(header)["src"], "codex")
+
+    def test_worker_auto_links_session_to_registered_cwd_target(self):
+        target_id = add_target(
+            self.db_path,
+            target_type="repository",
+            slug="example-project",
+            name="Example Project",
+            locator="/workspace/projects/example-project",
+        )
+        self._spool(
+            "SessionStart",
+            cwd="/workspace/projects/example-project/src",
+            model="gpt-test",
+        )
+        Worker(self.db_path).run(drain_only=True)
+        with connect_db(self.db_path) as connection:
+            linked = connection.execute(
+                "SELECT target_id, relation_type, confidence, assigned_by "
+                "FROM session_targets"
+            ).fetchone()
+        self.assertEqual(
+            tuple(linked), (target_id, "worked_on", 1.0, "cwd-auto")
+        )
 
     def test_codex_stop_hook_returns_neutral_json_response(self):
         environment = os.environ.copy()

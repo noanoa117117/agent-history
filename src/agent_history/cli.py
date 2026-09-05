@@ -123,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
     project_link.add_argument("--session", dest="session_id", required=True)
     project_link.add_argument("--state-root")
 
+    project_path = subparsers.add_parser(
+        "project-path", help="print the validated root path for a registered project"
+    )
+    project_path.add_argument("--slug", required=True)
+
     search = subparsers.add_parser("search", help="search event content with SQLite FTS5")
     search.add_argument("query")
     search.add_argument("--source")
@@ -302,6 +307,8 @@ def _run(args: argparse.Namespace) -> str:
             state_root=args.state_root,
         )
         return f"Linked session {args.session_id} to project {args.slug}"
+    if args.command == "project-path":
+        return project_commands.resolve_project_path(db_path, slug=args.slug)
     if args.command == "search":
         results = search_commands.search_events(
             db_path,

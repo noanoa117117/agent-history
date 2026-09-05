@@ -89,3 +89,32 @@ class ProjectStateTests(unittest.TestCase):
                 root_path=str(self.root / "missing"),
                 state_root=str(self.state_root),
             )
+
+    def test_resolve_project_path_requires_registered_git_root_below_projects(self):
+        projects = self.root / "projects"
+        projects.mkdir()
+        repository = projects / "example-project"
+        self.repository.rename(repository)
+        project.register_project(
+            self.db_path,
+            slug="example-project",
+            name="Example Project",
+            root_path=str(repository),
+            state_root=str(self.state_root),
+        )
+        previous = os.environ.get("AGENT_HISTORY_PROJECTS_DIR")
+        os.environ["AGENT_HISTORY_PROJECTS_DIR"] = str(projects)
+        try:
+            self.assertEqual(
+                project.resolve_project_path(self.db_path, slug="example-project"),
+                str(repository.resolve()),
+            )
+            with self.assertRaisesRegex(Exception, "not registered"):
+                project.resolve_project_path(self.db_path, slug="missing")
+            with self.assertRaisesRegex(Exception, "slug"):
+                project.resolve_project_path(self.db_path, slug="../escape")
+        finally:
+            if previous is None:
+                os.environ.pop("AGENT_HISTORY_PROJECTS_DIR", None)
+            else:
+                os.environ["AGENT_HISTORY_PROJECTS_DIR"] = previous

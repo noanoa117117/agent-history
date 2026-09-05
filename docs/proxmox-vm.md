@@ -137,6 +137,38 @@ Docker の一時的な起動失敗時は 15 秒後に再試行します。system
 
 VM 起動時に起動するのはコンテナと worker までです。Codex / Claude Code は SSH 接続後、必要な project で手動起動します。
 
+## 登録済みprojectでの日常利用
+
+repositoryは `/srv/agent-history/workspace/projects/` 以下へcloneし、コンテナ内の
+`/workspace/projects/` パスを使って一度だけ登録します。
+
+```bash
+docker compose --env-file /etc/agent-history/agent-history-vm.env \
+  -f compose.yaml -f compose.vm.yaml exec -T agent-history-dev \
+  ./bin/agent-history project-register \
+  --slug story-lab --name 'Story Lab' \
+  --root-path /workspace/projects/story-lab
+```
+
+以後はagent-history repositoryで次だけを実行します。
+
+```bash
+make vm-project-codex PROJECT=story-lab
+make vm-project-claude PROJECT=story-lab
+```
+
+`PROJECT` はSQLiteへ登録済みの小文字slugだけを受け付けます。登録pathが
+`/workspace/projects` 外、存在しない、またはGit repository rootでない場合は起動を
+拒否します。既存の `make vm-codex` / `make vm-claude` はagent-history自身向けとして
+変更せず利用できます。
+
+Codex起動時はCLIの正式な `-c` 設定overrideでagent-historyのcommand hookを明示し、
+検証済みの共通hookだけをtrust bypassして実行します。対象repositoryへ
+`.codex/hooks.json` を作成しないため、各projectのGit状態には影響しません。Claudeは
+従来どおり専用永続領域 `/srv/agent-history/claude-home` のuser hooksを共通利用します。
+workerはhook payloadのcwdが登録repository root配下なら、sessionをrepository targetへ
+自動関連付けします。
+
 ## 初回認証と通常運用
 
 認証情報は VM 内の bind mount にだけ保存します。ホスト側の `~/.codex`、`~/.claude`、

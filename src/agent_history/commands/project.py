@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..db import PathLike, get_db_path
+from ..db import PathLike, connect_db, get_db_path
 from ..timeutil import utc_now_iso
 from . import CommandError
 from . import target as target_commands
@@ -291,3 +291,39 @@ def link_session(
         confidence=1.0,
         assigned_by="project-state",
     )
+
+
+def resolve_project_path(db_path: Optional[PathLike], *, slug: str) -> str:
+    """Resolve a registered repository slug to a safe container workspace path."""
+
+    _validate_slug(slug)
+    with connect_db(db_path) as connection:
+        row = connection.execute(
+            "SELECT locator FROM targets WHERE target_type = 'repository' AND slug = ?",
+            (slug,),
+        ).fetchone()
+    if row is None:
+        raise CommandError(f"project is not registered: {slug}")
+    if not row["locator"]:
+        raise CommandError(f"registered project has no root path: {slug}")
+
+    projects_root = Path(
+        os.environ.get("AGENT_HISTORY_PROJECTS_DIR", "/workspace/projects")
+    ).resolve()
+    repository = Path(str(row["locator"])).resolve()
+    try:
+        repository.relative_to(projects_root)
+    except ValueError as exc:
+        raise CommandError(
+            f"registered project is outside projects directory: {repository}"
+        ) from exc
+    if repository == projects_root:
+        raise CommandError("project root must be below the projects directory")
+    if not repository.is_dir():
+        raise CommandError(f"registered project does not exist: {repository}")
+    actual = Path(_run_git(repository, "rev-parse", "--show-toplevel")).resolve()
+    if actual != repository:
+        raise CommandError(
+            f"registered project root is not the Git repository root: {repository}"
+        )
+    return str(repository)

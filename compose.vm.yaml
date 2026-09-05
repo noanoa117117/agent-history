@@ -39,6 +39,13 @@ services:
         target: /workspace/agent-history/data
         bind:
           create_host_path: false
+      - type: bind
+        source: ${AGENT_HISTORY_VM_PROJECT_STATE:-/srv/agent-history/project-state}
+        target: /workspace/project-state
+        bind:
+          create_host_path: false
+    environment:
+      AGENT_HISTORY_PROJECT_STATE_DIR: /workspace/project-state
 
   agent-history-worker:
     volumes:
